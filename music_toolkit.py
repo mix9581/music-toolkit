@@ -1304,13 +1304,11 @@ class FeishuPusher:
                 meta += f"  |  专辑: {song.album}"
             blocks.append(self._client.text_block(meta))
 
-            # 歌词内容
+            # 歌词内容（代码块，方便一键复制）
             if song.lyrics:
                 lyrics_text = _lrc_to_text(song.lyrics)
                 if lyrics_text:
-                    # 分段写入（飞书 text_block 有长度限制）
-                    for chunk in _split_lyrics_for_doc(song.lyrics):
-                        blocks.append(self._client.text_block(chunk))
+                    blocks.append(self._client.code_block(lyrics_text))
                 else:
                     blocks.append(self._client.text_block("(暂无歌词)"))
             else:
