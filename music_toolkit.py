@@ -1149,6 +1149,99 @@ class FeishuPusher:
         )
         return result.get("url", "")
 
+    def send_song_files(
+        self,
+        file_paths: list[Path],
+        chat_id: str = None,
+        zip_name: str = "",
+    ) -> dict:
+        """发送歌曲文件到飞书群。
+
+        逻辑:
+          - 1 个文件且 ≤30MB: 直接上传并发送
+          - 多个文件: 打包成 zip 后上传发送
+          - zip 超 30MB 时: 自动分包 (Part 1, Part 2, ...)
+
+        Args:
+            file_paths: 文件路径列表 (mp3/m4a/flac/lrc 等)
+            chat_id: 目标群组 ID
+            zip_name: 压缩包文件名 (多文件时使用，默认自动生成)
+
+        Returns:
+            飞书 API 响应 (最后一个包的响应)
+        """
+        import zipfile
+        import tempfile
+
+        MAX_FILE_SIZE = 30 * 1024 * 1024  # 30MB 飞书限制
+
+        cid = self._resolve_chat_id(chat_id)
+
+        if not file_paths:
+            raise ValueError("file_paths 不能为空")
+
+        # 过滤掉不存在的文件
+        existing = [Path(p) for p in file_paths if Path(p).exists()]
+        if not existing:
+            raise FileNotFoundError("所有文件均不存在")
+
+        if len(existing) == 1 and existing[0].stat().st_size <= MAX_FILE_SIZE:
+            # 单文件且不超限，直接发送
+            file_key = self._client.upload_file(str(existing[0]))
+            return self._client.send_file(cid, file_key)
+
+        # 多文件或单文件超限 → 打包 zip (自动分包)
+        if not zip_name:
+            zip_name = "songs"
+        base_name = zip_name.removesuffix(".zip")
+
+        # 按大小分组，每包不超过 MAX_FILE_SIZE
+        # 单个文件超限的跳过并警告
+        oversized = [fp for fp in existing if fp.stat().st_size > MAX_FILE_SIZE]
+        sendable = [fp for fp in existing if fp.stat().st_size <= MAX_FILE_SIZE]
+
+        if oversized:
+            for fp in oversized:
+                sz = fp.stat().st_size / (1024 * 1024)
+                print(f"   ⚠️  跳过超限文件 ({sz:.1f} MB > 30 MB): {fp.name}")
+
+        if not sendable:
+            raise ValueError("所有文件均超过飞书 30MB 上传限制")
+
+        groups = []
+        current_group = []
+        current_size = 0
+        for fp in sendable:
+            fsize = fp.stat().st_size
+            if current_group and current_size + fsize > MAX_FILE_SIZE:
+                groups.append(current_group)
+                current_group = [fp]
+                current_size = fsize
+            else:
+                current_group.append(fp)
+                current_size += fsize
+        if current_group:
+            groups.append(current_group)
+
+        last_result = None
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for i, group in enumerate(groups):
+                if len(groups) == 1:
+                    name = f"{base_name}.zip"
+                else:
+                    name = f"{base_name}_Part{i + 1}.zip"
+
+                zip_path = Path(tmp_dir) / _sanitize_filename(name)
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for fp in group:
+                        zf.write(fp, fp.name)
+
+                print(f"   📦 上传: {name} ({zip_path.stat().st_size / 1024 / 1024:.1f} MB)")
+                file_key = self._client.upload_file(str(zip_path))
+                last_result = self._client.send_file(cid, file_key)
+
+        return last_result
+
 
 # ─── Webhook Pusher (无需认证) ───────────────────────────────────────────────
 
@@ -1494,6 +1587,8 @@ def main():
     p.add_argument("source", help="音源平台")
     p.add_argument("--dir", dest="save_dir", help="保存目录")
     p.add_argument("--webhook", help="下载完成后推送到飞书 webhook URL")
+    p.add_argument("--send-chat", dest="send_chat_id", metavar="CHAT_ID",
+                   help="下载完成后发送文件到飞书群 (单首直发，多首打包zip)")
     p.add_argument("--json", action="store_true", dest="as_json", help="输出 JSON")
 
     # ── parse-url ──────────────────────────────────────────────────────────
@@ -1530,6 +1625,13 @@ def main():
     p.add_argument("keyword", help="搜索关键词")
     p.add_argument("webhook_url", help="飞书 webhook URL")
     p.add_argument("--source", action="append", dest="sources", help="指定平台 (可多次)")
+
+    # ── send-to-chat ──────────────────────────────────────────────────────
+    p = sub.add_parser("send-to-chat", help="发送歌曲文件到飞书群 (单首直接发，多首打包zip)")
+    p.add_argument("path", help="文件路径或目录路径 (目录会发送所有音频文件)")
+    p.add_argument("--chat-id", help="飞书群 chat_id")
+    p.add_argument("--zip-name", default="", help="压缩包名称 (多文件时)")
+    p.add_argument("--include-lrc", action="store_true", help="同时包含歌词文件 (.lrc)")
 
     args = parser.parse_args()
     if not args.command:
@@ -1686,6 +1788,27 @@ def _run_command(args):
                 args.webhook, args.playlist_id, args.source,
                 results, songs,
             )
+
+        # 发送文件到飞书群
+        if hasattr(args, "send_chat_id") and args.send_chat_id and success:
+            file_paths = []
+            for r in success:
+                if r.filepath:
+                    file_paths.append(r.filepath)
+                if r.lrc_path:
+                    file_paths.append(r.lrc_path)
+            if file_paths:
+                print(f"\n📤 正在发送 {len(file_paths)} 个文件到飞书群...")
+                try:
+                    pusher = FeishuPusher()
+                    pusher.send_song_files(
+                        file_paths,
+                        chat_id=args.send_chat_id,
+                        zip_name=f"歌单_{args.playlist_id}",
+                    )
+                    print(f"✅ 文件已发送到飞书群")
+                except Exception as e:
+                    print(f"❌ 发送失败: {e}", file=sys.stderr)
 
     elif args.command == "parse-url":
         # 把 URL 作为搜索关键词，go-music-dl 会自动解析
@@ -1865,6 +1988,50 @@ def _run_command(args):
         print(f"   歌手: {enriched.artist}")
         print(f"   平台: {enriched.source_name}")
         print(f"   响应: {result.get('msg', 'success')}")
+
+    elif args.command == "send-to-chat":
+        target = Path(args.path)
+        audio_exts = {".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac", ".wma"}
+        lrc_ext = {".lrc"}
+
+        if target.is_file():
+            file_paths = [target]
+        elif target.is_dir():
+            # 收集目录下的音频文件
+            file_paths = sorted([
+                f for f in target.iterdir()
+                if f.suffix.lower() in audio_exts
+            ])
+            if args.include_lrc:
+                lrc_paths = sorted([
+                    f for f in target.iterdir()
+                    if f.suffix.lower() in lrc_ext
+                ])
+                file_paths.extend(lrc_paths)
+        else:
+            print(f"❌ 路径不存在: {args.path}", file=sys.stderr)
+            sys.exit(1)
+
+        if not file_paths:
+            print(f"❌ 未找到音频文件: {args.path}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"📤 准备发送 {len(file_paths)} 个文件到飞书群...")
+        for f in file_paths:
+            size_mb = f.stat().st_size / (1024 * 1024)
+            print(f"   {f.name}  ({size_mb:.1f} MB)")
+
+        if len(file_paths) > 1:
+            zip_name = args.zip_name or target.name or "songs"
+            print(f"\n📦 多文件，打包为: {zip_name}.zip")
+
+        pusher = FeishuPusher()
+        result = pusher.send_song_files(
+            file_paths,
+            chat_id=args.chat_id,
+            zip_name=args.zip_name or (target.name if target.is_dir() else ""),
+        )
+        print(f"✅ 文件已发送到飞书群")
 
 
 if __name__ == "__main__":

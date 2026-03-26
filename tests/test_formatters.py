@@ -306,3 +306,124 @@ class TestFormatSongTableWithAlbum:
         assert "李泉" in result
         assert "[netease]" in result
 
+
+# ─── FeishuPusher send_song_files Tests ──────────────────────────────────────
+
+class TestSendSongFiles:
+    @patch("music_toolkit._import_feishu_client")
+    def test_single_file(self, mock_import, tmp_path):
+        """Single file should be uploaded directly (no zip)."""
+        mock_cls, mock_instance = _create_mock_feishu_client()
+        mock_instance.upload_file.return_value = "file_v2_abc"
+        mock_instance.send_file.return_value = {"code": 0, "data": {"message_id": "om_xxx"}}
+        mock_import.return_value = mock_cls
+
+        pusher = FeishuPusher(
+            app_id="test_id", app_secret="test_secret",
+            default_chat_id="oc_test",
+        )
+
+        # Create a fake file
+        song_file = tmp_path / "test.mp3"
+        song_file.write_bytes(b"fake audio data")
+
+        result = pusher.send_song_files([song_file])
+        assert result["code"] == 0
+        mock_instance.upload_file.assert_called_once_with(str(song_file))
+        mock_instance.send_file.assert_called_once_with("oc_test", "file_v2_abc")
+
+    @patch("music_toolkit._import_feishu_client")
+    def test_multiple_files_zip(self, mock_import, tmp_path):
+        """Multiple files should be zipped before upload."""
+        mock_cls, mock_instance = _create_mock_feishu_client()
+        mock_instance.upload_file.return_value = "file_v2_zip"
+        mock_instance.send_file.return_value = {"code": 0}
+        mock_import.return_value = mock_cls
+
+        pusher = FeishuPusher(
+            app_id="test_id", app_secret="test_secret",
+            default_chat_id="oc_test",
+        )
+
+        # Create multiple fake files
+        files = []
+        for name in ["song1.mp3", "song2.mp3", "song1.lrc"]:
+            f = tmp_path / name
+            f.write_bytes(b"fake data")
+            files.append(f)
+
+        pusher.send_song_files(files, zip_name="test_songs")
+        mock_instance.upload_file.assert_called_once()
+        # Verify the uploaded file is a zip
+        uploaded_path = mock_instance.upload_file.call_args[0][0]
+        assert uploaded_path.endswith(".zip")
+
+    @patch("music_toolkit._import_feishu_client")
+    def test_custom_chat_id(self, mock_import, tmp_path):
+        """Custom chat_id should override default."""
+        mock_cls, mock_instance = _create_mock_feishu_client()
+        mock_instance.upload_file.return_value = "file_v2_abc"
+        mock_instance.send_file.return_value = {"code": 0}
+        mock_import.return_value = mock_cls
+
+        pusher = FeishuPusher(
+            app_id="test_id", app_secret="test_secret",
+            default_chat_id="oc_default",
+        )
+
+        song_file = tmp_path / "test.mp3"
+        song_file.write_bytes(b"data")
+
+        pusher.send_song_files([song_file], chat_id="oc_custom")
+        mock_instance.send_file.assert_called_once_with("oc_custom", "file_v2_abc")
+
+    @patch("music_toolkit._import_feishu_client")
+    def test_empty_list_raises(self, mock_import):
+        """Empty file list should raise ValueError."""
+        mock_cls, _ = _create_mock_feishu_client()
+        mock_import.return_value = mock_cls
+
+        pusher = FeishuPusher(
+            app_id="test_id", app_secret="test_secret",
+            default_chat_id="oc_test",
+        )
+
+        with pytest.raises(ValueError, match="不能为空"):
+            pusher.send_song_files([])
+
+    @patch("music_toolkit._import_feishu_client")
+    def test_nonexistent_files_raises(self, mock_import):
+        """All nonexistent files should raise FileNotFoundError."""
+        mock_cls, _ = _create_mock_feishu_client()
+        mock_import.return_value = mock_cls
+
+        pusher = FeishuPusher(
+            app_id="test_id", app_secret="test_secret",
+            default_chat_id="oc_test",
+        )
+
+        from pathlib import Path
+        with pytest.raises(FileNotFoundError, match="均不存在"):
+            pusher.send_song_files([Path("/nonexistent/file.mp3")])
+
+    @patch("music_toolkit._import_feishu_client")
+    def test_skips_missing_files(self, mock_import, tmp_path):
+        """Should skip nonexistent files but process existing ones."""
+        mock_cls, mock_instance = _create_mock_feishu_client()
+        mock_instance.upload_file.return_value = "file_v2_abc"
+        mock_instance.send_file.return_value = {"code": 0}
+        mock_import.return_value = mock_cls
+
+        pusher = FeishuPusher(
+            app_id="test_id", app_secret="test_secret",
+            default_chat_id="oc_test",
+        )
+
+        existing = tmp_path / "exists.mp3"
+        existing.write_bytes(b"data")
+        missing = tmp_path / "missing.mp3"
+
+        # 1 existing + 1 missing = single file, direct upload
+        pusher.send_song_files([existing, missing])
+        mock_instance.upload_file.assert_called_once_with(str(existing))
+
