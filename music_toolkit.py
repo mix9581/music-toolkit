@@ -1158,9 +1158,10 @@ class FeishuPusher:
         """发送歌曲文件到飞书群。
 
         逻辑:
-          - 1 个文件且 ≤30MB: 直接上传并发送
-          - 多个文件: 打包成 zip 后上传发送
-          - zip 超 30MB 时: 自动分包 (Part 1, Part 2, ...)
+          - 1 个文件且 ≤30MB: 直接上传到 IM 并发送
+          - 多个文件: 打包成 1 个 zip
+            - zip ≤30MB: 通过 IM 上传发送
+            - zip >30MB: 通过 Drive 分片上传 → 发送卡片含下载链接
 
         Args:
             file_paths: 文件路径列表 (mp3/m4a/flac/lrc 等)
@@ -1168,12 +1169,12 @@ class FeishuPusher:
             zip_name: 压缩包文件名 (多文件时使用，默认自动生成)
 
         Returns:
-            飞书 API 响应 (最后一个包的响应)
+            飞书 API 响应
         """
         import zipfile
         import tempfile
 
-        MAX_FILE_SIZE = 30 * 1024 * 1024  # 30MB 飞书限制
+        MAX_IM_FILE_SIZE = 30 * 1024 * 1024  # 30MB IM 上传限制
 
         cid = self._resolve_chat_id(chat_id)
 
@@ -1185,62 +1186,157 @@ class FeishuPusher:
         if not existing:
             raise FileNotFoundError("所有文件均不存在")
 
-        if len(existing) == 1 and existing[0].stat().st_size <= MAX_FILE_SIZE:
-            # 单文件且不超限，直接发送
+        # ── 快速路径: 单个小文件直接发送 ──
+        if len(existing) == 1 and existing[0].stat().st_size <= MAX_IM_FILE_SIZE:
             file_key = self._client.upload_file(str(existing[0]))
             return self._client.send_file(cid, file_key)
 
-        # 多文件或单文件超限 → 打包 zip (自动分包)
+        # ── 多文件或大文件: 打包成 1 个 zip ──
         if not zip_name:
             zip_name = "songs"
         base_name = zip_name.removesuffix(".zip")
+        zip_filename = f"{base_name}.zip"
 
-        # 按大小分组，每包不超过 MAX_FILE_SIZE
-        # 单个文件超限的跳过并警告
-        oversized = [fp for fp in existing if fp.stat().st_size > MAX_FILE_SIZE]
-        sendable = [fp for fp in existing if fp.stat().st_size <= MAX_FILE_SIZE]
-
-        if oversized:
-            for fp in oversized:
-                sz = fp.stat().st_size / (1024 * 1024)
-                print(f"   ⚠️  跳过超限文件 ({sz:.1f} MB > 30 MB): {fp.name}")
-
-        if not sendable:
-            raise ValueError("所有文件均超过飞书 30MB 上传限制")
-
-        groups = []
-        current_group = []
-        current_size = 0
-        for fp in sendable:
-            fsize = fp.stat().st_size
-            if current_group and current_size + fsize > MAX_FILE_SIZE:
-                groups.append(current_group)
-                current_group = [fp]
-                current_size = fsize
-            else:
-                current_group.append(fp)
-                current_size += fsize
-        if current_group:
-            groups.append(current_group)
-
-        last_result = None
         with tempfile.TemporaryDirectory() as tmp_dir:
-            for i, group in enumerate(groups):
-                if len(groups) == 1:
-                    name = f"{base_name}.zip"
-                else:
-                    name = f"{base_name}_Part{i + 1}.zip"
+            zip_path = Path(tmp_dir) / _sanitize_filename(zip_filename)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fp in existing:
+                    zf.write(fp, fp.name)
 
-                zip_path = Path(tmp_dir) / _sanitize_filename(name)
-                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for fp in group:
-                        zf.write(fp, fp.name)
+            zip_size = zip_path.stat().st_size
+            zip_size_mb = zip_size / (1024 * 1024)
 
-                print(f"   📦 上传: {name} ({zip_path.stat().st_size / 1024 / 1024:.1f} MB)")
+            if zip_size <= MAX_IM_FILE_SIZE:
+                # zip ≤30MB: 通过 IM 直接发送
+                print(f"   📦 上传: {zip_filename} ({zip_size_mb:.1f} MB)")
                 file_key = self._client.upload_file(str(zip_path))
-                last_result = self._client.send_file(cid, file_key)
+                return self._client.send_file(cid, file_key)
 
-        return last_result
+            # zip >30MB: 通过 Drive 分片上传
+            print(f"   📦 打包完成: {zip_filename} ({zip_size_mb:.1f} MB)")
+            print(f"   ☁️  使用云盘分片上传...")
+
+            return self._upload_to_drive_and_share(
+                zip_path, zip_filename, zip_size_mb, cid,
+            )
+
+    def _upload_to_drive_and_share(
+        self,
+        file_path: Path,
+        display_name: str,
+        size_mb: float,
+        chat_id: str,
+    ) -> dict:
+        """通过 Drive 分片上传文件并发送卡片消息到群。
+
+        Args:
+            file_path: 本地文件路径
+            display_name: 显示名称
+            size_mb: 文件大小 (MB)
+            chat_id: 飞书群 ID
+
+        Returns:
+            飞书 API 响应
+        """
+        # 获取/创建 Music 文件夹
+        root_token = self._client.get_root_folder_token()
+        music_folder = self._client.find_or_create_folder("Music", root_token)
+
+        # 分片上传
+        def _on_progress(seq, total):
+            print(f"   ⏫ 上传分片 [{seq}/{total}]")
+
+        file_token = self._client.upload_file_to_drive(
+            str(file_path),
+            parent_node=music_folder,
+            on_progress=_on_progress,
+        )
+        print(f"   ✅ 上传完成: file_token={file_token}")
+
+        # 设置分享权限 (组织内可读)
+        try:
+            self._client.set_drive_public_permission(file_token, file_type="file")
+        except Exception as e:
+            print(f"   ⚠️  设置分享权限失败 (可手动分享): {e}")
+
+        # 构建下载链接
+        file_url = f"https://feishu.cn/file/{file_token}"
+
+        # 发送卡片消息到群
+        card = self._client.build_card(
+            f"📦 {display_name}",
+            [
+                self._client.card_fields([
+                    (f"**文件名**: {display_name}", True),
+                    (f"**大小**: {size_mb:.1f} MB", True),
+                ]),
+                self._client.card_button("📥 下载文件", file_url),
+            ],
+            color="blue",
+        )
+        return self._client.send_card(chat_id, card)
+
+    def create_playlist_lyrics_doc(
+        self,
+        songs: list[Song],
+        title: str = "歌单歌词",
+    ) -> str:
+        """创建飞书文档记录歌单所有歌词。
+
+        每首歌名作为 H1 标题，歌词内容在标题下方，方便查找。
+
+        Args:
+            songs: 歌曲列表（需含 lyrics 字段）
+            title: 文档标题
+
+        Returns:
+            文档 URL
+        """
+        blocks = []
+        for song in songs:
+            # 歌名 H1
+            song_title = f"{song.name} - {song.artist}"
+            blocks.append(self._client.heading_block(song_title, level=1))
+
+            # 歌曲信息
+            meta = f"时长: {song.duration_str}  |  平台: {song.source_name}"
+            if song.album:
+                meta += f"  |  专辑: {song.album}"
+            blocks.append(self._client.text_block(meta))
+
+            # 歌词内容
+            if song.lyrics:
+                lyrics_text = _lrc_to_text(song.lyrics)
+                if lyrics_text:
+                    # 分段写入（飞书 text_block 有长度限制）
+                    for chunk in _split_lyrics_for_doc(song.lyrics):
+                        blocks.append(self._client.text_block(chunk))
+                else:
+                    blocks.append(self._client.text_block("(暂无歌词)"))
+            else:
+                blocks.append(self._client.text_block("(暂无歌词)"))
+
+            # 分割线
+            blocks.append(self._client.divider_block())
+
+        result = self._client.create_document_with_content(
+            title=title,
+            blocks=blocks,
+        )
+
+        doc_url = result.get("url", "")
+
+        # 设置文档分享权限
+        doc_id = result.get("document_id", "")
+        if doc_id:
+            try:
+                self._client.set_drive_public_permission(
+                    doc_id, file_type="docx",
+                )
+            except Exception:
+                pass
+
+        return doc_url
 
 
 # ─── Webhook Pusher (无需认证) ───────────────────────────────────────────────
@@ -1588,7 +1684,9 @@ def main():
     p.add_argument("--dir", dest="save_dir", help="保存目录")
     p.add_argument("--webhook", help="下载完成后推送到飞书 webhook URL")
     p.add_argument("--send-chat", dest="send_chat_id", metavar="CHAT_ID",
-                   help="下载完成后发送文件到飞书群 (单首直发，多首打包zip)")
+                   help="下载完成后发送文件到飞书群 (打包zip，大文件自动用云盘分片上传)")
+    p.add_argument("--lyrics-doc", action="store_true",
+                   help="同时创建飞书歌词文档 (每首歌名为 H1 标题)")
     p.add_argument("--json", action="store_true", dest="as_json", help="输出 JSON")
 
     # ── parse-url ──────────────────────────────────────────────────────────
@@ -1809,6 +1907,44 @@ def _run_command(args):
                     print(f"✅ 文件已发送到飞书群")
                 except Exception as e:
                     print(f"❌ 发送失败: {e}", file=sys.stderr)
+
+        # 创建飞书歌词文档
+        if hasattr(args, "lyrics_doc") and args.lyrics_doc and success:
+            print(f"\n📝 正在创建歌词文档...")
+            try:
+                # 为成功的歌曲获取歌词
+                enriched_songs = []
+                for r in success:
+                    try:
+                        enriched = client.enrich_song(r.song)
+                        enriched_songs.append(enriched)
+                    except Exception:
+                        enriched_songs.append(r.song)
+
+                pusher = FeishuPusher()
+                doc_url = pusher.create_playlist_lyrics_doc(
+                    enriched_songs,
+                    title=f"歌单歌词 - {args.playlist_id}",
+                )
+                print(f"✅ 歌词文档: {doc_url}")
+
+                # 如果有 send_chat_id，也发送文档链接到群
+                if hasattr(args, "send_chat_id") and args.send_chat_id:
+                    card = pusher._client.build_card(
+                        "📝 歌单歌词文档",
+                        [
+                            pusher._client.card_markdown(
+                                f"共 {len(enriched_songs)} 首歌词已整理\n"
+                                f"每首歌名为 H1 标题，方便搜索查找"
+                            ),
+                            pusher._client.card_button("📄 打开文档", doc_url),
+                        ],
+                        color="purple",
+                    )
+                    pusher._client.send_card(args.send_chat_id, card)
+                    print(f"✅ 歌词文档链接已推送到飞书群")
+            except Exception as e:
+                print(f"❌ 创建歌词文档失败: {e}", file=sys.stderr)
 
     elif args.command == "parse-url":
         # 把 URL 作为搜索关键词，go-music-dl 会自动解析

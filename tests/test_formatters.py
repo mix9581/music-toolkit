@@ -427,3 +427,98 @@ class TestSendSongFiles:
         pusher.send_song_files([existing, missing])
         mock_instance.upload_file.assert_called_once_with(str(existing))
 
+    @patch("music_toolkit._import_feishu_client")
+    def test_large_zip_uses_drive_upload(self, mock_import, tmp_path):
+        """Zip > 30MB should use Drive chunked upload instead of IM upload."""
+        mock_cls, mock_instance = _create_mock_feishu_client()
+        mock_instance.upload_file.return_value = "file_v2_abc"
+        mock_instance.send_file.return_value = {"code": 0}
+        mock_instance.get_root_folder_token.return_value = "root_token"
+        mock_instance.find_or_create_folder.return_value = "music_folder_token"
+        mock_instance.upload_file_to_drive.return_value = "drive_file_token"
+        mock_instance.set_drive_public_permission.return_value = {"code": 0}
+        mock_instance.send_card.return_value = {"code": 0, "data": {"message_id": "om_xxx"}}
+        mock_import.return_value = mock_cls
+
+        pusher = FeishuPusher(
+            app_id="test_id", app_secret="test_secret",
+            default_chat_id="oc_test",
+        )
+
+        # Create files that together exceed 30MB when zipped
+        # We simulate by creating a large enough set
+        files = []
+        for i in range(5):
+            f = tmp_path / f"large_song_{i}.mp3"
+            # 7MB each → 35MB total, zip won't compress random data below 30MB
+            f.write_bytes(os.urandom(7 * 1024 * 1024))
+            files.append(f)
+
+        pusher.send_song_files(files, zip_name="test_large")
+        # Should call Drive upload, not IM upload for the zip
+        mock_instance.get_root_folder_token.assert_called_once()
+        mock_instance.upload_file_to_drive.assert_called_once()
+        mock_instance.send_card.assert_called_once()
+
+
+# ─── Playlist Lyrics Doc Tests ────────────────────────────────────────────
+
+class TestPlaylistLyricsDoc:
+    @patch("music_toolkit._import_feishu_client")
+    def test_create_lyrics_doc(self, mock_import):
+        """Should create a Feishu doc with song titles as H1 headings."""
+        mock_cls, mock_instance = _create_mock_feishu_client()
+        mock_instance.set_drive_public_permission.return_value = {"code": 0}
+        mock_import.return_value = mock_cls
+
+        pusher = FeishuPusher(
+            app_id="test_id", app_secret="test_secret",
+            default_chat_id="oc_test",
+        )
+
+        songs = [
+            Song(
+                id="1", source="qq", name="晴天", artist="周杰伦",
+                duration=269, cover="", album="叶惠美",
+                lyrics="[00:30.42]故事的小黄花\n[00:33.97]从出生那年就飘着",
+            ),
+            Song(
+                id="2", source="netease", name="稻香", artist="周杰伦",
+                duration=223, cover="",
+                lyrics="[00:15.00]对这个世界如果你有太多的抱怨",
+            ),
+        ]
+
+        url = pusher.create_playlist_lyrics_doc(songs, title="测试歌单歌词")
+        assert "feishu.cn" in url
+        mock_instance.create_document_with_content.assert_called_once()
+
+        # Verify heading_block is called for each song
+        assert mock_instance.heading_block.call_count == 2
+        heading_calls = mock_instance.heading_block.call_args_list
+        assert "晴天" in heading_calls[0][0][0]
+        assert "稻香" in heading_calls[1][0][0]
+
+    @patch("music_toolkit._import_feishu_client")
+    def test_lyrics_doc_no_lyrics(self, mock_import):
+        """Songs without lyrics should show placeholder text."""
+        mock_cls, mock_instance = _create_mock_feishu_client()
+        mock_instance.set_drive_public_permission.return_value = {"code": 0}
+        mock_import.return_value = mock_cls
+
+        pusher = FeishuPusher(
+            app_id="test_id", app_secret="test_secret",
+            default_chat_id="oc_test",
+        )
+
+        songs = [
+            Song(id="1", source="qq", name="Test", artist="A",
+                 duration=100, cover="", lyrics=""),
+        ]
+
+        url = pusher.create_playlist_lyrics_doc(songs)
+        assert "feishu.cn" in url
+        # Should have text_block called with "(暂无歌词)"
+        text_calls = [c[0][0] for c in mock_instance.text_block.call_args_list]
+        assert any("暂无歌词" in t for t in text_calls)
+
