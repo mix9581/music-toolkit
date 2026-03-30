@@ -144,6 +144,7 @@ class DownloadResult:
     success: bool
     filepath: Optional[Path] = None
     lrc_path: Optional[Path] = None
+    txt_path: Optional[Path] = None
     actual_source: str = ""
     error: str = ""
 
@@ -159,6 +160,8 @@ class DownloadResult:
             d["filepath"] = str(self.filepath)
         if self.lrc_path:
             d["lrc_path"] = str(self.lrc_path)
+        if self.txt_path:
+            d["txt_path"] = str(self.txt_path)
         if self.error:
             d["error"] = self.error
         return d
@@ -791,18 +794,21 @@ class MusicClient:
 
         # 下载歌词（尽力而为，不影响结果）
         lrc_path = None
+        txt_path = None
         try:
             lrc_path = self.download_lyrics_file(
                 original_song.id, original_song.source,
                 name=original_song.name, artist=original_song.artist,
                 save_dir=save_dir,
             )
+            if lrc_path:
+                txt_path = _save_txt_lyrics(lrc_path)
         except Exception:
             pass
 
         return DownloadResult(
             song=original_song, success=True,
-            filepath=filepath, lrc_path=lrc_path,
+            filepath=filepath, lrc_path=lrc_path, txt_path=txt_path,
             actual_source=download_song.source,
         )
 
@@ -1349,6 +1355,20 @@ def _lrc_to_text(lyrics: str) -> str:
     return "\n".join(lines)
 
 
+def _save_txt_lyrics(lrc_path: Path) -> Optional[Path]:
+    """读取 .lrc 歌词文件，转换为纯文本（去掉时间轴），保存为 .txt。"""
+    try:
+        lrc_content = lrc_path.read_text(encoding="utf-8")
+        plain = _lrc_to_text(lrc_content)
+        if not plain.strip():
+            return None
+        txt_path = lrc_path.with_suffix(".txt")
+        txt_path.write_text(plain, encoding="utf-8")
+        return txt_path
+    except Exception:
+        return None
+
+
 def _send_webhook(webhook_url: str, payload: dict) -> dict:
     """发送单条 webhook 消息。"""
     resp = requests.post(webhook_url, json=payload, timeout=10)
@@ -1687,6 +1707,16 @@ def main():
                    help="同时创建飞书歌词文档 (每首歌名为 H1 标题)")
     p.add_argument("--json", action="store_true", dest="as_json", help="输出 JSON")
 
+    # ── download-send ─────────────────────────────────────────────────────
+    p = sub.add_parser("download-send", help="下载单曲并发送到飞书群 (mp3 + txt 歌词)")
+    p.add_argument("song_id", help="歌曲 ID")
+    p.add_argument("source", help="音源平台")
+    p.add_argument("--name", default="", help="歌曲名 (用于文件名)")
+    p.add_argument("--artist", default="", help="歌手名 (用于文件名)")
+    p.add_argument("--dir", dest="save_dir", help="保存目录")
+    p.add_argument("--chat-id", dest="send_chat_id", metavar="CHAT_ID",
+                   help="目标飞书群 ID (不指定则用 FEISHU_DEFAULT_CHAT_ID)")
+
     # ── parse-url ──────────────────────────────────────────────────────────
     p = sub.add_parser("parse-url", help="解析音乐分享链接 → 详情 + 歌词 + 下载")
     p.add_argument("url", help="音乐分享链接 (网易云/QQ音乐/酷狗 等)")
@@ -1893,6 +1923,8 @@ def _run_command(args):
                     file_paths.append(r.filepath)
                 if r.lrc_path:
                     file_paths.append(r.lrc_path)
+                if r.txt_path:
+                    file_paths.append(r.txt_path)
             if file_paths:
                 print(f"\n📤 正在发送 {len(file_paths)} 个文件到飞书群...")
                 try:
@@ -1943,6 +1975,50 @@ def _run_command(args):
                     print(f"✅ 歌词文档链接已推送到飞书群")
             except Exception as e:
                 print(f"❌ 创建歌词文档失败: {e}", file=sys.stderr)
+
+    elif args.command == "download-send":
+        # 构造 Song 对象
+        song = Song(
+            id=args.song_id, source=args.source,
+            name=args.name or args.song_id,
+            artist=args.artist or "",
+            duration=0, cover="",
+        )
+
+        # 如果没有提供 name/artist，尝试通过搜索获取
+        if not args.name:
+            try:
+                results = client.search_songs(args.song_id, sources=[args.source])
+                if results:
+                    song = results[0]
+            except Exception:
+                pass
+
+        print(f"\n🎵 下载: {song.name} - {song.artist} [{song.source}]")
+        result = client._download_single_with_fallback(song, save_dir=args.save_dir)
+
+        if not result.success:
+            print(f"❌ 下载失败: {result.error}", file=sys.stderr)
+            return
+
+        print(f"✅ 下载完成: {result.filepath}")
+        if result.txt_path:
+            print(f"   歌词: {result.txt_path}")
+
+        # 发送到飞书群
+        try:
+            pusher = FeishuPusher()
+            cid = args.send_chat_id or ""
+            if result.filepath:
+                print(f"\n📤 发送 mp3 到飞书群...")
+                pusher.send_song_files([result.filepath], chat_id=cid)
+                print(f"✅ mp3 已发送")
+            if result.txt_path:
+                print(f"📤 发送歌词到飞书群...")
+                pusher.send_song_files([result.txt_path], chat_id=cid)
+                print(f"✅ 歌词已发送")
+        except Exception as e:
+            print(f"❌ 飞书发送失败: {e}", file=sys.stderr)
 
     elif args.command == "parse-url":
         # 把 URL 作为搜索关键词，go-music-dl 会自动解析

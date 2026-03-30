@@ -86,9 +86,12 @@ python3 music_toolkit.py download-playlist 9582035807 qq --dir ~/Music/歌单
 
 # 网易云歌单
 python3 music_toolkit.py download-playlist 17662978875 netease --dir ~/Music/陶喆
+
+# 汽水音乐歌单（从分享链接提取 playlist_id）
+python3 music_toolkit.py download-playlist 7602191490944712731 soda --dir ~/Music/汽水
 ```
 
-**自动换源**：对每首歌先检查原平台 → 不可用则搜索 11 个平台找替代源 → 穷尽所有源直到成功或全部失败。同时自动下载 `.lrc` 歌词文件。
+**自动换源**：对每首歌先检查原平台 → 不可用则搜索 11 个平台找替代源 → 穷尽所有源直到成功或全部失败。每首歌同时下载 `.lrc`（带时间轴）和 `.txt`（纯文本歌词）。
 
 ### 下载 + 发飞书群 + 歌词文档（完整流程）
 
@@ -146,6 +149,16 @@ python3 music_toolkit.py download-playlist 9582035807 qq \
   --dir ~/Music/歌单 \
   --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 ```
+
+### 单曲下载 + 直接发群（Flow A）
+
+```bash
+# 下载单曲并直接发送 mp3 + txt 歌词到飞书群
+python3 music_toolkit.py download-send 0039MnYb0qxYhV qq \
+  --name "晴天" --artist "周杰伦" --dir ~/Music
+```
+
+群里会收到 2 条消息：mp3 音频文件 + txt 纯文本歌词。适合分享单首歌。
 
 <h2 id="feishu">飞书推送</h2>
 
@@ -286,6 +299,7 @@ python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
 |------|------|
 | 搜歌 | `search "晴天"` |
 | 下载单曲 | `download <id> <source>` |
+| 单曲下载 + 发群 | `download-send <id> <source> --name "晴天" --artist "周杰��"` |
 | 下载歌单 | `download-playlist <id> <source> --dir ~/Music` |
 | 下载歌单 + 发群 + 歌词文档 | `download-playlist <id> <source> --send-chat oc_xxx --lyrics-doc` |
 | 解析链接并下载 | `parse-url "<url>" --download` |
@@ -358,6 +372,43 @@ cp -r ~/music-toolkit/skill ~/.claude/skills/music-toolkit
 pip install pytest
 python3 -m pytest tests/ -v
 ```
+
+## 实测验证
+
+以下示例均经过真实环境验证（2026-03-30）：
+
+### Flow A: 单曲下载 + 发群
+
+```bash
+python3 music_toolkit.py download-send 0039MnYb0qxYhV qq \
+  --name "晴天" --artist "周杰伦" --dir ~/Music/test_single
+```
+
+结果：群里收到 mp3 文件 + txt 纯文本歌词（无时间轴，方便复制）。
+
+### Flow B: 歌单下载 + zip 发群 + 歌词文档
+
+| 平台 | 歌单 | 歌曲数 | 成功率 | zip 大小 | 歌词文档 |
+|------|------|--------|--------|----------|----------|
+| QQ音乐 | `9582035807` | 25 首 | 25/25 | 122 MB (30 片) | [文档链接](https://feishu.cn/docx/TIFbdZEndoR62Rx8T4Vc1Cldntc) |
+| 网易云 | `17662978875` | 15 首 | 15/15 | 68 MB (18 片) | [文档链接](https://feishu.cn/docx/UtcmdpvYioJQFIxUEaEcVCYYnOf) |
+| 汽水音乐 | `7602191490944712731` | 112 首 | 112/112 | 849 MB (206 片) | [文档链接](https://feishu.cn/docx/Gxu0dI2Kso8px1xkvnYckeTvnYd) |
+
+```bash
+# QQ 音乐
+python3 music_toolkit.py download-playlist 9582035807 qq \
+  --dir ~/Music/qq --send-chat oc_xxx --lyrics-doc
+
+# 网易云音乐
+python3 music_toolkit.py download-playlist 17662978875 netease \
+  --dir ~/Music/netease --send-chat oc_xxx --lyrics-doc
+
+# 汽水音乐（从分享链接 https://qishui.douyin.com/s/i9AVQFPK/ 提取 ID）
+python3 music_toolkit.py download-playlist 7602191490944712731 soda \
+  --dir ~/Music/soda --send-chat oc_xxx --lyrics-doc
+```
+
+每首歌下载 3 个文件：`.mp3`（音频）+ `.lrc`（带时间轴歌词）+ `.txt`（纯文本歌词）。zip 打包后通过飞书云盘分片上传，群内收到 1 条卡片消息（含下载链接）+ 1 条歌词文档链接。
 
 ## License
 
