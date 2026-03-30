@@ -1,24 +1,37 @@
 # Music Toolkit
 
-音乐搜索 / 下载 / 飞书推送工具包。
+<p align="center">
+  <strong>音乐搜索 / 下载 / 飞书推送工具包</strong><br>
+  聚合 11 个平台，单文件 + CLI + Python API，AI Agent 一看就会用
+</p>
 
-封装 [go-music-dl](https://github.com/guohuiyuan/go-music-dl) HTTP API，聚合 11 个音乐平台，提供搜索、歌词、下载（自动换源）、飞书卡片推送等功能。单文件 + CLI + 可 import，配合 SKILL.md 让 AI 助手一看就会用。
+<p align="center">
+  <a href="#quick-start">快速开始</a> ·
+  <a href="#playlist-workflow">歌单下载</a> ·
+  <a href="#feishu">飞书推送</a> ·
+  <a href="#lyrics-doc">歌词文档</a> ·
+  <a href="#api">API 参考</a>
+</p>
+
+---
 
 ## 架构
 
 ```
-用户 / AI 助手 (Claude Code)
+用户 / AI 助手 (Claude Code / OpenClaw)
         │
         │  CLI 或 Python import
-        ↓
-  music_toolkit.py ─── 核心单文件
+        ▼
+  music_toolkit.py ── 核心单文件
         │
    ┌────┴────┐
-   ↓         ↓
+   ▼         ▼
 go-music-dl   feishu-toolkit (可选)
- Docker容器    飞书 App API 推送
- :8080
+ Docker容器    飞书消息 / 文档 / 云盘
+ :8080         github.com/mix9581/feishu-toolkit
 ```
+
+搭配 [feishu-toolkit](https://github.com/mix9581/feishu-toolkit) 使用可解锁完整能力：歌曲文件发群、歌词文档、歌单报告卡片。
 
 ## 支持平台
 
@@ -31,7 +44,7 @@ go-music-dl   feishu-toolkit (可选)
 | migu | 咪咕音乐 | joox | JOOX |
 | bilibili | 哔哩哔哩 | | |
 
-## 安装
+<h2 id="quick-start">Quick Start</h2>
 
 ### 前置依赖
 
@@ -39,7 +52,7 @@ go-music-dl   feishu-toolkit (可选)
 - **Python 3.9+**
 - **requests** — `pip install requests`
 
-### 步骤
+### 安装
 
 ```bash
 # 1. 启动 go-music-dl 后端
@@ -52,16 +65,177 @@ cd ~/music-toolkit
 # 3. 安装依赖
 pip install requests
 
-# 4. (可选) 配置环境变量
-cp .env.example .env
-# 编辑 .env 填入飞书配置等
+# 4. (可选) 安装 feishu-toolkit — 解锁飞书推送能力
+git clone https://github.com/mix9581/feishu-toolkit.git ~/feishu-toolkit
+export FEISHU_APP_ID="cli_xxx"
+export FEISHU_APP_SECRET="xxx"
+export FEISHU_DEFAULT_CHAT_ID="oc_xxx"
 
 # 5. 验证
 python3 music_toolkit.py platforms
 python3 music_toolkit.py search "晴天"
 ```
 
-## CLI 用法
+<h2 id="playlist-workflow">歌单下载（核心场景）</h2>
+
+### 一键下载整个歌单
+
+```bash
+# QQ 音乐歌单
+python3 music_toolkit.py download-playlist 9582035807 qq --dir ~/Music/歌单
+
+# 网易云歌单
+python3 music_toolkit.py download-playlist 17662978875 netease --dir ~/Music/陶喆
+```
+
+**自动换源**：对每首歌先检查原平台 → 不可用则搜索 11 个平台找替代源 → 穷尽所有源直到成功或全部失败。同时自动下载 `.lrc` 歌词文件。
+
+### 下载 + 发飞书群 + 歌词文档（完整流程）
+
+```bash
+python3 music_toolkit.py download-playlist 9582035807 qq \
+  --dir ~/Music/歌单 \
+  --send-chat oc_xxx \
+  --lyrics-doc
+```
+
+这一条命令完成：
+
+```
+歌单 URL
+  │
+  ▼
+1. 获取歌单歌曲列表 (25 首)
+  │
+  ▼
+2. 逐首下载 + 自动换源
+   ├── 原平台可用 → 直接下载 mp3 + lrc
+   └── 原平台不可用 → 搜索 11 个平台找替代源
+  │
+  ▼
+3. 打包 zip (所有 mp3 + lrc)
+   ├── zip ≤ 30MB → IM 直接发群
+   └── zip > 30MB → 飞书云盘分片上传
+       ├── upload_prepare → 获取 upload_id + 分片数
+       ├── upload_part × N → 每片 4MB (Adler-32 校验)
+       └── upload_finish → 返回 file_token
+       → 设置组织内分享权限
+       → 发送卡片消息 (含下载链接)
+  │
+  ▼
+4. 创建飞书歌词文档
+   ├── 每首歌名为 H1 标题
+   ├── 歌词内容为代码块 (方便复制)
+   └── 自动设置分享权限
+   → 发送文档链接卡片到群
+```
+
+**为什么打包成 1 个 zip 而不是逐个发送？**
+
+AI Agent 调用工具时常见的错误做法是逐个上传 20 首歌 → 20 次 API 调用 + 群里 20 条消息。正确做法：
+
+| 方式 | API 调用 | 群消息 | 体验 |
+|------|---------|--------|------|
+| 逐个发送 20 首 | 20 次 | 20 条 | 刷屏 |
+| 打包成 1 个 zip | 1-2 次 | 1 条 | 点击即下载 |
+
+### 下载 + webhook 报告（无需飞书 App 认证）
+
+```bash
+python3 music_toolkit.py download-playlist 9582035807 qq \
+  --dir ~/Music/歌单 \
+  --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+```
+
+<h2 id="feishu">飞书推送</h2>
+
+music-toolkit 通过 [feishu-toolkit](https://github.com/mix9581/feishu-toolkit) 提供两种推送方式：
+
+### 方式 1: Webhook（无需认证，推荐快速使用）
+
+```bash
+# 搜索歌曲 → 推送卡片 + 歌词到飞书群
+python3 music_toolkit.py push-webhook "晴天" "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+
+# 解析链接 → 推送
+python3 music_toolkit.py parse-url "https://music.163.com/song?id=28707005" \
+  --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+```
+
+### 方式 2: App API（需配置环境变量，功能更全）
+
+```bash
+export FEISHU_APP_ID="cli_xxx"
+export FEISHU_APP_SECRET="xxx"
+export FEISHU_DEFAULT_CHAT_ID="oc_xxx"
+
+# 推送单曲卡片（含歌词预览、音质、时长）
+python3 music_toolkit.py push-song <song_id> <source>
+
+# 搜索 → 推送搜索结果卡片
+python3 music_toolkit.py push-search "晴天"
+
+# 推送歌单卡片
+python3 music_toolkit.py push-playlist <playlist_id> <source>
+
+# 发送歌曲文件到群（单首直接发，多首打包 zip）
+python3 music_toolkit.py send-to-chat ~/Music/*.mp3
+```
+
+App API 模式的独有能力（Webhook 无法实现）：
+
+| 能力 | Webhook | App API |
+|------|:-------:|:-------:|
+| 推送卡片消息 | ✅ | ✅ |
+| 发送歌曲文件 | ❌ | ✅ |
+| 云盘分片上传（大文件） | ❌ | ✅ |
+| 创建歌词文档 | ❌ | ✅ |
+| 自定义群组 | ❌ | ✅ 支持多群 |
+
+<h2 id="lyrics-doc">歌词整合文档</h2>
+
+将歌单所有歌词整合成一篇飞书文档，方便查阅和分享：
+
+```bash
+# CLI: 下载歌单同时创建歌词文档
+python3 music_toolkit.py download-playlist 9582035807 qq \
+  --lyrics-doc --send-chat oc_xxx
+```
+
+```python
+# Python API
+from music_toolkit import MusicClient, FeishuPusher
+
+client = MusicClient()
+pusher = FeishuPusher()
+
+# 获取歌单并丰富歌词
+songs = client.get_playlist_songs("9582035807", "qq")
+enriched = [client.enrich_song(s) for s in songs]
+
+# 创建歌词文档
+doc_url = pusher.create_playlist_lyrics_doc(
+    enriched,
+    title="歌单歌词 - 9582035807",
+)
+print(f"文档地址: {doc_url}")
+```
+
+文档结构：
+
+```
+📄 歌单歌词 - 9582035807
+├── H1: What?? - Kevin MacLeod
+│   ├── 时长: 2:10 | 平台: QQ音乐 | 专辑: ...
+│   └── [歌词代码块]
+├── ── 分割线 ──
+├── H1: 欢沁 - 林海
+│   ├── 时长: 3:45 | 平台: QQ音乐
+│   └── [歌词代码块]
+└── ...
+```
+
+## 搜索 & 下载
 
 ### 搜索歌曲
 
@@ -78,104 +252,81 @@ python3 music_toolkit.py search-playlist "周杰伦精选"
 python3 music_toolkit.py search-playlist "周杰伦" --source netease
 ```
 
-### 歌曲详情 (inspect + 歌词)
-
-```bash
-python3 music_toolkit.py detail <song_id> <source>
-```
-
-### 获取歌词
-
-```bash
-python3 music_toolkit.py lyrics <song_id> <source>
-```
-
-### 下载歌曲
+### 下载单首歌曲
 
 ```bash
 python3 music_toolkit.py download <song_id> <source>
 python3 music_toolkit.py download <song_id> <source> --name "晴天" --artist "周杰伦" --dir ~/Music
 ```
 
+### 解析音乐分享链接
+
+```bash
+# 解析 → 显示详情 + 歌词
+python3 music_toolkit.py parse-url "https://music.163.com/song?id=28707005"
+
+# 解析 → 下载（自动换源）
+python3 music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --download
+
+# 解析 → 推送到飞书
+python3 music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --webhook "<url>"
+```
+
+支持的链接：网易云 `music.163.com`、QQ音乐 `y.qq.com`、其他平台分享链接。
+
 ### 换源搜索
 
 ```bash
 python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
-python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦" --source qq
 ```
 
-### 解析音乐分享链接
+## 常见场景速查
 
-```bash
-# 解析链接 → 显示详情 + 歌词
-python3 music_toolkit.py parse-url "https://music.163.com/song?id=28707005"
+| 场景 | 命令 |
+|------|------|
+| 搜歌 | `search "晴天"` |
+| 下载单曲 | `download <id> <source>` |
+| 下载歌单 | `download-playlist <id> <source> --dir ~/Music` |
+| 下载歌单 + 发群 + 歌词文档 | `download-playlist <id> <source> --send-chat oc_xxx --lyrics-doc` |
+| 解析链接并下载 | `parse-url "<url>" --download` |
+| 推送到飞书 (webhook) | `push-webhook "晴天" "<webhook_url>"` |
+| 推送到飞书 (App API) | `push-search "晴天"` |
+| 发文件到群 | `send-to-chat ~/Music/*.mp3` |
 
-# 解析 + 下载 (自动换源)
-python3 music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --download
+> 所有命令前缀: `python3 ~/music-toolkit/music_toolkit.py`
 
-# 解析 + 推送到飞书 webhook
-python3 music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --webhook "<webhook_url>"
-```
-
-### 批量下载歌单 (自动换源)
-
-```bash
-# 下载歌单所有歌曲
-python3 music_toolkit.py download-playlist <playlist_id> <source>
-
-# 指定目录 + 完成后推送飞书报告
-python3 music_toolkit.py download-playlist 17662978875 netease --dir ~/Music/陶喆 --webhook "<webhook_url>"
-```
-
-自动换源逻辑：对每首歌 → inspect 原平台 → 不可用则 switch_source → 仍失败则全平台搜索 → 穷尽所有源直到成功或全部失败。
-
-### 飞书推送
-
-```bash
-# Webhook 推送 (无需认证，推荐)
-python3 music_toolkit.py push-webhook "晴天" "<webhook_url>"
-
-# App API 推送 (需配置 FEISHU_APP_ID/SECRET)
-python3 music_toolkit.py push-song <song_id> <source>
-python3 music_toolkit.py push-search "晴天"
-python3 music_toolkit.py push-playlist <playlist_id> <source>
-```
-
-### 列出平台
-
-```bash
-python3 music_toolkit.py platforms
-```
-
-## Python API
+<h2 id="api">Python API</h2>
 
 ```python
-from music_toolkit import MusicClient, push_to_webhook
+from music_toolkit import MusicClient, FeishuPusher, push_to_webhook
 
 client = MusicClient()  # 默认 localhost:8080
 
-# 搜索
-songs = client.search_songs("晴天")
+# ── 搜索 ──
 songs = client.search_songs("晴天", sources=["qq", "netease"])
 playlists = client.search_playlists("周杰伦")
 
-# 歌词 / 详情
+# ── 详情 & 歌词 ──
+enriched = client.enrich_song(songs[0])  # inspect + lyrics
 lyrics = client.get_lyrics("0042rlGx2WHBrG", "qq")
-result = client.inspect("0042rlGx2WHBrG", "qq")  # → InspectResult
-enriched = client.enrich_song(songs[0])            # inspect + lyrics
 
-# 下载
+# ── 下载 ──
 filepath = client.download("0042rlGx2WHBrG", "qq", name="晴天", artist="周杰伦")
-lrc_path = client.download_lyrics_file("0042rlGx2WHBrG", "qq", name="晴天")
+results = client.download_playlist("9582035807", "qq", save_dir="~/Music")
 
-# 换源
+# ── 换源 ──
 alt = client.switch_source("晴天", "周杰伦", source="qq")
 
-# 歌单批量下载 (自动换源)
-results = client.download_playlist("17662978875", "netease", save_dir="~/Music")
+# ── 飞书推送 (Webhook, 无需认证) ──
+push_to_webhook("https://open.feishu.cn/.../hook/xxx", enriched)
 
-# 飞书 Webhook 推送
-push_to_webhook("https://open.feishu.cn/open-apis/bot/v2/hook/xxx", enriched)
+# ── 飞书推送 (App API, 需要 feishu-toolkit + 环境变量) ──
+pusher = FeishuPusher()
+pusher.push_song_card(enriched)                   # 推送单曲卡片
+pusher.push_search_results(songs, "晴天")          # 推送搜索结果卡片
+pusher.push_playlist_card(playlist, songs[:5])     # 推送歌单卡片
+pusher.send_song_files(file_paths, chat_id="oc_x") # 发送文件到群 (自动打包)
+pusher.create_playlist_lyrics_doc(songs, "歌词")   # 创建歌词文档
 ```
 
 ## Claude Code / AI 助手集成
@@ -187,7 +338,7 @@ push_to_webhook("https://open.feishu.cn/open-apis/bot/v2/hook/xxx", enriched)
 cp -r ~/music-toolkit/skill ~/.claude/skills/music-toolkit
 ```
 
-安装后，对 AI 说"搜索歌曲"、"下载音乐"、"解析链接"等自然语言指令，AI 会自动读取 SKILL.md 并调用相应命令。
+安装后，对 AI 说 "搜索歌曲"、"下载歌单"、"推送到飞书" 等自然语言指令即可。
 
 ## 环境变量
 
