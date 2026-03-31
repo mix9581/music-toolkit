@@ -1292,13 +1292,18 @@ class FeishuPusher:
 
             show_date = sort_by == "date"
 
-            # 列标题行
-            stat_header = "👍收藏　💬评论　🔗分享"
+            # 列标题行（纯文字 + 颜色标签，无表情）
+            stat_parts = []
             if show_date:
-                stat_header = "📅日期　" + stat_header
+                stat_parts.append(c.md_tag("日期", "orange") if sort_by == "date" else "日期")
+            stat_parts.append(c.md_tag("收藏", "red") if sort_by == "likes" else "收藏")
+            stat_parts.append(c.md_tag("评论", "turquoise") if sort_by == "comments" else "评论")
+            stat_parts.append(c.md_tag("分享", "violet") if sort_by == "shares" else "分享")
+            stat_header = "　　".join(stat_parts)
+
             elements.append(c.card_column_set(
                 c.card_column([c.card_markdown("**歌曲名 — 歌手**")], weight=6),
-                c.card_column([c.card_markdown(f"**{stat_header}**")], weight=4),
+                c.card_column([c.card_markdown(stat_header)], weight=4),
             ))
 
             # 全部行合并到一个 column_set 的两个 markdown 块
@@ -1314,12 +1319,12 @@ class FeishuPusher:
 
                 if show_date:
                     stat_lines.append(
-                        f"{t.publish_date or '—'}　"
-                        f"{_fmt(t.favorites)}　{_fmt(t.comments)}　{_fmt(t.shares)}"
+                        f"{t.publish_date or '—'}　　"
+                        f"{_fmt(t.favorites)}　　{_fmt(t.comments)}　　{_fmt(t.shares)}"
                     )
                 else:
                     stat_lines.append(
-                        f"{_fmt(t.favorites)}　{_fmt(t.comments)}　{_fmt(t.shares)}"
+                        f"{_fmt(t.favorites)}　　{_fmt(t.comments)}　　{_fmt(t.shares)}"
                     )
 
             elements.append(c.card_column_set(
@@ -1341,11 +1346,11 @@ class FeishuPusher:
         if max_tracks and len(tracks) > max_tracks:
             cap_info = f"  ·  显示前 {max_tracks} 首，共 {len(tracks)} 首"
 
-        today = _dt.date.today().strftime("%Y-%m-%d")
-        doc_hint = "  ·  📎 完整数据见下方 CSV" if with_doc else ""
+        today = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        doc_hint = "  |  完整数据见下方文件" if with_doc else ""
         elements.append(c.card_note(
             c.note_md(
-                f"数据来源: {playlist.source_name}  ·  抓取于 {today}"
+                f"数据来源: {playlist.source_name}  |  抓取于 {today}"
                 f"{sort_info}{cap_info}{doc_hint}"
             )
         ))
@@ -1354,9 +1359,10 @@ class FeishuPusher:
         card = c.build_card(playlist.title, elements, color="wathet", subtitle=subtitle)
         result = c.send_card(cid, card)
 
-        # ── 生成 CSV 并发送到群 ──
+        # ── 生成文件并发送到群 ──
         if with_doc:
-            self._send_playlist_csv(playlist, tracks, cid, today)
+            now_str = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._send_playlist_csv(playlist, tracks, cid, now_str)
 
         return result
 
@@ -1382,15 +1388,15 @@ class FeishuPusher:
         safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', playlist.title)[:40]
         bitable_name = f"{safe_title}_{date_str}"
 
-        # ── 构建行数据（三种输出共享） ──
+        # ── 构建行数据（三种输出共享，数字全部转文本避免科学计数法） ──
         headers = ["序号", "song_id", "歌名", "歌手", "时长", "专辑",
                     "发布日期", "收藏", "评论", "分享", "播放", "链接"]
         rows = []
         for i, t in enumerate(tracks, 1):
             rows.append([
-                i, t.song_id, t.name, t.artist, t.duration_str, t.album,
-                t.publish_date, t.favorites, t.comments, t.shares, t.plays,
-                t.resolved_url,
+                str(i), str(t.song_id), t.name, t.artist, t.duration_str, t.album,
+                t.publish_date, str(t.favorites), str(t.comments), str(t.shares),
+                str(t.plays), t.resolved_url,
             ])
 
         tmp_dir = Path(tempfile.gettempdir())
@@ -1429,7 +1435,7 @@ class FeishuPusher:
                 c.set_drive_public_permission(app_token, file_type="bitable")
             except Exception:
                 pass
-            print(f"   📊 在线表格: {bitable_url}")
+            print(f"   [在线表格] {bitable_url}")
         except Exception as e:
             print(f"   ⚠️  在线表格创建失败: {e}", file=__import__("sys").stderr)
 
@@ -1442,7 +1448,7 @@ class FeishuPusher:
                 writer.writerows(rows)
             file_key = c.upload_file(str(csv_path))
             c.send_file(chat_id, file_key)
-            print(f"   📎 CSV: {csv_path.name}")
+            print(f"   [CSV] {csv_path.name}")
         except Exception as e:
             print(f"   ⚠️  CSV 失败: {e}", file=__import__("sys").stderr)
         finally:
@@ -1467,9 +1473,13 @@ class FeishuPusher:
                 cell.fill = header_fill
                 cell.alignment = Alignment(horizontal="center")
 
-            # 数据行
+            # 数据行（XLSX 用原始数字类型，不会科学计数法）
+            _num_cols = {7, 8, 9, 10}  # 收藏、评论、分享、播放的列索引(0-based)
             for row_idx, row_data in enumerate(rows, 2):
                 for col_idx, val in enumerate(row_data, 1):
+                    # 数字列转回 int 给 Excel 用
+                    if (col_idx - 1) in _num_cols and isinstance(val, str) and val.isdigit():
+                        val = int(val)
                     ws.cell(row=row_idx, column=col_idx, value=val)
 
             # 自动列宽（按内容估算）
@@ -1487,7 +1497,7 @@ class FeishuPusher:
             wb.save(str(xlsx_path))
             file_key = c.upload_file(str(xlsx_path))
             c.send_file(chat_id, file_key)
-            print(f"   📎 XLSX: {xlsx_path.name}")
+            print(f"   [XLSX] {xlsx_path.name}")
         except ImportError:
             pass  # openpyxl 未安装，静默跳过
         except Exception as e:
@@ -1499,14 +1509,14 @@ class FeishuPusher:
         elements = [
             c.card_markdown(
                 f"共 **{len(tracks)}** 首曲目数据已导出\n"
-                f"📎 CSV + XLSX 文件见上方\n"
-                f"📊 在线表格支持排序、筛选、团队共享"
+                f"CSV + XLSX 文件见上方\n"
+                f"在线表格支持排序、筛选、团队共享"
             ),
         ]
         if bitable_url:
-            elements.append(c.card_button("📊 打开在线表格", bitable_url))
+            elements.append(c.card_button("打开在线表格", bitable_url))
         card = c.build_card(
-            f"📊 {playlist.title} — 完整数据",
+            f"{playlist.title} — 完整数据",
             elements,
             color="green",
         )
