@@ -1220,15 +1220,19 @@ class FeishuPusher:
         max_tracks: int = 0,
         sort_by: str = "",
         sort_desc: bool = True,
+        with_doc: bool = False,
     ) -> dict:
         """推送歌单详情卡片（含曲目统计数据）到飞书群。
 
         卡片结构:
           - Header: 歌单标题  副标题: 创建者 · N 首
           - Fields: 更新日期、收藏、分享数
-          - 列对齐曲目表: card_column_set 每行一首，数字列严格对齐
-            当前排序列的 md_tag 会高亮 + 显示方向箭头
+          - 曲目列表: 单 markdown 文本块（轻量，支持 100+ 首）
+            格式: 序号. 歌名(链接) — 歌手  👍收藏  💬评论  🔗分享
           - 底部备注
+
+        with_doc=True 时，推送卡片后额外生成 CSV 文件发送到同群，
+        包含所有曲目的完整数据。
 
         Args:
             playlist: PlaylistDetailInfo 对象
@@ -1236,11 +1240,17 @@ class FeishuPusher:
             max_tracks: 最多显示曲目数（0 = 全部）
             sort_by: 排序字段 likes / comments / shares / date（空 = 歌单原序）
             sort_desc: True=降序 False=升序
+            with_doc: 推送后生成 CSV 并发到群
 
         Returns:
             飞书 API 响应
         """
         import datetime as _dt
+        import csv
+        import io
+        import tempfile
+        from pathlib import Path
+
         c = self._client
         cid = self._resolve_chat_id(chat_id)
 
@@ -1255,30 +1265,13 @@ class FeishuPusher:
         if sort_by in _sort_keys:
             tracks.sort(key=_sort_keys[sort_by], reverse=sort_desc)
 
-        # 飞书卡片 JSON 上限约 30KB，每行约 650 bytes
-        # 自动截断：未设 max_tracks 且曲目超过 30 首时，默认取前 30
-        _CARD_SAFE_LIMIT = 30
-        auto_capped = False
-        if not max_tracks and len(tracks) > _CARD_SAFE_LIMIT:
-            display_tracks = tracks[:_CARD_SAFE_LIMIT]
-            auto_capped = True
-        else:
-            display_tracks = tracks if not max_tracks else tracks[:max_tracks]
+        display_tracks = tracks if not max_tracks else tracks[:max_tracks]
 
-        # ── 列标题配置 ──
-        arrow = " ↓" if sort_desc else " ↑"
-        _col_meta = {
-            "likes":    ("点赞",    "blue"),
-            "comments": ("评论",    "turquoise"),
-            "shares":   ("分享",    "violet"),
-            "date":     ("发布日期", "orange"),
-        }
-
-        def _col_label(key: str) -> str:
-            label, color = _col_meta[key]
-            active_color = "red" if sort_by == key else color
-            text = (label + arrow) if sort_by == key else label
-            return c.md_tag(text, active_color)
+        # ── 数字格式化（万为单位） ──
+        def _fmt(n: int) -> str:
+            if n >= 10000:
+                return f"{n / 10000:.1f}万"
+            return f"{n:,}"
 
         # ── 歌单基本信息（fields 双列） ──
         fields = []
@@ -1297,77 +1290,132 @@ class FeishuPusher:
         if fields:
             elements.append(c.card_fields(fields))
 
-        # ── 曲目列表：card_column_set 逐行对齐 ──
+        # ── 曲目列表：单 markdown 文本块（比 card_column_set 节省 ~5.5x 空间） ──
         if display_tracks:
             elements.append(c.card_divider())
 
-            # 是否显示日期列（date 排序时才加）
+            sort_label_map = {
+                "likes": "👍", "comments": "💬", "shares": "🔗", "date": "📅",
+            }
+            arrow = "↓" if sort_desc else "↑"
+
+            # 列头
+            active = sort_label_map.get(sort_by, "")
             show_date = sort_by == "date"
+            if active:
+                header = f"**曲目名 — 歌手**　　　　👍收藏　💬评论　🔗分享"
+                if show_date:
+                    header = f"**曲目名 — 歌手**　　　　📅日期　👍收藏　💬评论　🔗分享"
+            else:
+                header = "**曲目名 — 歌手**　　　　👍收藏　💬评论　🔗分享"
 
-            # 列标题行
-            header_cols = [
-                c.card_column([c.card_markdown("**歌曲名 — 歌手**")], weight=5),
-            ]
-            if show_date:
-                header_cols.append(
-                    c.card_column([c.card_markdown(_col_label("date"))], weight=2)
-                )
-            header_cols += [
-                c.card_column([c.card_markdown(_col_label("likes"))],    weight=2),
-                c.card_column([c.card_markdown(_col_label("comments"))], weight=2),
-                c.card_column([c.card_markdown(_col_label("shares"))],   weight=2),
-            ]
-            elements.append(c.card_column_set(*header_cols))
-
-            # 数据行
+            lines = [header, ""]
             for i, t in enumerate(display_tracks, 1):
                 link = t.resolved_url or (
                     f"https://music.douyin.com/qishui/share/track?track_id={t.song_id}"
                     if t.song_id else ""
                 )
-                name_md = (
-                    f"[{t.name}]({link}) — {t.artist}" if link
-                    else f"{t.name} — {t.artist}"
-                )
-                row_cols = [
-                    c.card_column([c.card_markdown(f"{i}. {name_md}")], weight=5),
-                ]
+                name = f"[{t.name}]({link})" if link else t.name
                 if show_date:
-                    row_cols.append(
-                        c.card_column(
-                            [c.card_markdown(t.publish_date or "—")], weight=2
-                        )
+                    date_str = t.publish_date or "—"
+                    lines.append(
+                        f"{i}. **{name}** — {t.artist}"
+                        f"　{date_str}"
+                        f"　{_fmt(t.favorites)}　{_fmt(t.comments)}　{_fmt(t.shares)}"
                     )
-                row_cols += [
-                    c.card_column([c.card_markdown(f"{t.favorites:,}")],  weight=2),
-                    c.card_column([c.card_markdown(f"{t.comments:,}")],   weight=2),
-                    c.card_column([c.card_markdown(f"{t.shares:,}")],     weight=2),
-                ]
-                elements.append(c.card_column_set(*row_cols))
+                else:
+                    lines.append(
+                        f"{i}. **{name}** — {t.artist}"
+                        f"　{_fmt(t.favorites)}　{_fmt(t.comments)}　{_fmt(t.shares)}"
+                    )
+
+            elements.append(c.card_markdown("\n".join(lines)))
 
         # ── 底部备注 ──
-        sort_label_map = {
+        sort_label_text = {
             "likes": "点赞", "comments": "评论",
             "shares": "分享", "date": "日期",
         }
         sort_info = ""
-        if sort_by in sort_label_map:
+        if sort_by in sort_label_text:
             direction = "降序" if sort_desc else "升序"
-            sort_info = f"  ·  排序: {sort_label_map[sort_by]} {direction}"
+            sort_info = f"  ·  排序: {sort_label_text[sort_by]} {direction}"
 
         cap_info = ""
-        if auto_capped:
-            cap_info = f"  ·  显示前 {_CARD_SAFE_LIMIT} 首，共 {len(tracks)} 首（用 --max-tracks 调整）"
-        elif max_tracks and len(tracks) > max_tracks:
+        if max_tracks and len(tracks) > max_tracks:
             cap_info = f"  ·  显示前 {max_tracks} 首，共 {len(tracks)} 首"
+
         today = _dt.date.today().strftime("%Y-%m-%d")
+        doc_hint = "  ·  📎 完整数据见下方 CSV" if with_doc else ""
         elements.append(c.card_note(
-            c.note_md(f"数据来源: {playlist.source_name}  ·  抓取于 {today}{sort_info}{cap_info}")
+            c.note_md(
+                f"数据来源: {playlist.source_name}  ·  抓取于 {today}"
+                f"{sort_info}{cap_info}{doc_hint}"
+            )
         ))
 
         subtitle = f"{playlist.creator}  ·  {len(playlist.tracks)} 首"
         card = c.build_card(playlist.title, elements, color="wathet", subtitle=subtitle)
-        return c.send_card(cid, card)
+        result = c.send_card(cid, card)
+
+        # ── 生成 CSV 并发送到群 ──
+        if with_doc:
+            self._send_playlist_csv(playlist, tracks, cid, today)
+
+        return result
+
+    def _send_playlist_csv(
+        self,
+        playlist: "PlaylistDetailInfo",
+        tracks: list,
+        chat_id: str,
+        date_str: str,
+    ) -> None:
+        """生成歌单 CSV 并发送到飞书群。
+
+        CSV 包含所有曲目（不受卡片显示数量限制）。
+        """
+        import csv
+        import tempfile
+        from pathlib import Path
+
+        # 构建 CSV 内容
+        rows = []
+        for i, t in enumerate(tracks, 1):
+            rows.append({
+                "#": i,
+                "歌名": t.name,
+                "歌手": t.artist,
+                "时长": t.duration_str,
+                "专辑": t.album,
+                "发布日期": t.publish_date,
+                "收藏": t.favorites,
+                "评论": t.comments,
+                "分享": t.shares,
+                "播放": t.plays,
+                "链接": t.resolved_url,
+            })
+
+        # 写入临时文件（文件名决定飞书显示名，直接用正式文件名）
+        safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', playlist.title)[:40]
+        filename = f"{safe_title}_{date_str}.csv"
+
+        import tempfile, os
+        tmp_dir = Path(tempfile.gettempdir())
+        tmp_path = tmp_dir / filename
+        with open(tmp_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+
+        try:
+            file_key = self._client.upload_file(str(tmp_path))
+            self._client.send_file(chat_id, file_key)
+            print(f"   📎 CSV 已发送: {filename} ({len(rows)} 首)")
+        except Exception as e:
+            print(f"   ⚠️  CSV 发送失败: {e}", file=__import__("sys").stderr)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def create_song_document(self, song: Song) -> str:
         """创建飞书文档记录歌曲详情。
@@ -3381,11 +3429,10 @@ def main():
         "--desc", dest="sort_desc", action="store_true", default=True,
         help="降序排列（默认）",
     )
-    p.add_argument(
-        "--asc", dest="sort_desc", action="store_false",
-        help="升序排列",
-    )
+    p.add_argument("--asc", dest="sort_desc", action="store_false", help="升序排列")
     p.add_argument("--timeout", type=int, default=15, help="请求超时秒数（默认 15）")
+    p.add_argument("--with-doc", action="store_true", dest="with_doc",
+                   help="推送后生成 CSV 文件发送到群（包含所有曲目完整数据）")
 
     # ── push-webhook ───────────────────────────────────────────────────────
     p = sub.add_parser("push-webhook", help="搜索歌曲并推送到飞书 webhook")
@@ -3940,6 +3987,7 @@ def _run_command(args):
             max_tracks=args.max_tracks,
             sort_by=args.sort_by,
             sort_desc=args.sort_desc,
+            with_doc=getattr(args, "with_doc", False),
         )
         sort_hint = f"（排序: {args.sort_by} {'降序' if args.sort_desc else '升序'}）" if args.sort_by else ""
         print(f"✅ 歌单卡片已推送到飞书群{sort_hint}")
