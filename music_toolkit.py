@@ -1367,90 +1367,150 @@ class FeishuPusher:
         chat_id: str,
         date_str: str,
     ) -> None:
-        """创建飞书在线表格并发送链接卡片到群。
+        """创建飞书在线表格 + 发送 CSV/XLSX 文件到群。
 
-        在线表格包含所有曲目完整数据（不受卡片显示数量限制），
-        可在线查看、排序、筛选，团队共享。
+        三种输出，一次完成：
+          1. 飞书多维表格（在线查看、排序、筛选、团队共享）
+          2. CSV 文件（通用，任何软件可打开）
+          3. XLSX 文件（Excel 原生格式，有列宽和表头样式）
         """
-        c = self._client
+        import csv
+        import tempfile
+        from pathlib import Path
 
-        # ── 创建多维表格 + 定义字段 ──
+        c = self._client
         safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', playlist.title)[:40]
         bitable_name = f"{safe_title}_{date_str}"
 
-        # 字段类型: 1=文本, 2=数字, 5=日期, 15=超链接
-        # 首个字段自动成为 primary column（不可删改），用"序号"作为首列
-        fields = [
-            ("序号", 1),
-            ("song_id", 1),
-            ("歌名", 1),
-            ("歌手", 1),
-            ("时长", 1),
-            ("专辑", 1),
-            ("发布日期", 1),
-            ("收藏", 2),
-            ("评论", 2),
-            ("分享", 2),
-            ("播放", 2),
-            ("链接", 15),
-        ]
-
-        try:
-            app_token, table_id, url = c.create_bitable_with_fields(
-                bitable_name, fields,
-            )
-        except Exception as e:
-            print(f"   ⚠️  创建在线表格失败: {e}", file=__import__("sys").stderr)
-            return
-
-        # ── 批量写入记录（每次最多 500 条） ──
-        records = []
+        # ── 构建行数据（三种输出共享） ──
+        headers = ["序号", "song_id", "歌名", "歌手", "时长", "专辑",
+                    "发布日期", "收藏", "评论", "分享", "播放", "链接"]
+        rows = []
         for i, t in enumerate(tracks, 1):
-            link_val = {"text": t.name, "link": t.resolved_url} if t.resolved_url else t.resolved_url
-            records.append({"fields": {
-                "序号": str(i),
-                "song_id": t.song_id,
-                "歌名": t.name,
-                "歌手": t.artist,
-                "时长": t.duration_str,
-                "专辑": t.album,
-                "发布日期": t.publish_date,
-                "收藏": t.favorites,
-                "评论": t.comments,
-                "分享": t.shares,
-                "播放": t.plays,
-                "链接": link_val,
-            }})
+            rows.append([
+                i, t.song_id, t.name, t.artist, t.duration_str, t.album,
+                t.publish_date, t.favorites, t.comments, t.shares, t.plays,
+                t.resolved_url,
+            ])
 
-        for i in range(0, len(records), 500):
-            batch = records[i:i + 500]
-            try:
-                c.create_bitable_records(app_token, table_id, batch)
-            except Exception as e:
-                print(f"   ⚠️  写入记录失败 (batch {i // 500 + 1}): {e}",
-                      file=__import__("sys").stderr)
+        tmp_dir = Path(tempfile.gettempdir())
 
-        # ── 设置分享权限 ──
+        # ── 1. 飞书多维表格 ──
+        bitable_url = ""
         try:
-            c.set_drive_public_permission(app_token, file_type="bitable")
-        except Exception:
-            pass
+            field_defs = [
+                ("序号", 1), ("song_id", 1), ("歌名", 1), ("歌手", 1),
+                ("时长", 1), ("专辑", 1), ("发布日期", 1),
+                ("收藏", 2), ("评论", 2), ("分享", 2), ("播放", 2),
+                ("链接", 15),
+            ]
+            app_token, table_id, bitable_url = c.create_bitable_with_fields(
+                bitable_name, field_defs,
+            )
+            # 批量写入（每次最多 500 条）
+            records = []
+            for i, t in enumerate(tracks, 1):
+                link_val = (
+                    {"text": t.name, "link": t.resolved_url}
+                    if t.resolved_url else ""
+                )
+                records.append({"fields": {
+                    "序号": str(i), "song_id": t.song_id,
+                    "歌名": t.name, "歌手": t.artist,
+                    "时长": t.duration_str, "专辑": t.album,
+                    "发布日期": t.publish_date,
+                    "收藏": t.favorites, "评论": t.comments,
+                    "分享": t.shares, "播放": t.plays,
+                    "链接": link_val,
+                }})
+            for j in range(0, len(records), 500):
+                c.create_bitable_records(app_token, table_id, records[j:j + 500])
+            try:
+                c.set_drive_public_permission(app_token, file_type="bitable")
+            except Exception:
+                pass
+            print(f"   📊 在线表格: {bitable_url}")
+        except Exception as e:
+            print(f"   ⚠️  在线表格创建失败: {e}", file=__import__("sys").stderr)
 
-        # ── 发送链接卡片到群 ──
+        # ── 2. CSV 文件 ──
+        csv_path = tmp_dir / f"{safe_title}_{date_str}.csv"
+        try:
+            with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+                writer.writerows(rows)
+            file_key = c.upload_file(str(csv_path))
+            c.send_file(chat_id, file_key)
+            print(f"   📎 CSV: {csv_path.name}")
+        except Exception as e:
+            print(f"   ⚠️  CSV 失败: {e}", file=__import__("sys").stderr)
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+        # ── 3. XLSX 文件（需要 openpyxl，没有则跳过） ──
+        xlsx_path = tmp_dir / f"{safe_title}_{date_str}.xlsx"
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, PatternFill
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = playlist.title[:30] or "歌单数据"
+
+            # 表头样式
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            for col, h in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=h)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+
+            # 数据行
+            for row_idx, row_data in enumerate(rows, 2):
+                for col_idx, val in enumerate(row_data, 1):
+                    ws.cell(row=row_idx, column=col_idx, value=val)
+
+            # 自动列宽（按内容估算）
+            col_widths = {
+                "序号": 6, "song_id": 22, "歌名": 25, "歌手": 15,
+                "时长": 8, "专辑": 20, "发布日期": 12,
+                "收藏": 10, "评论": 10, "分享": 10, "播放": 10, "链接": 40,
+            }
+            for col, h in enumerate(headers, 1):
+                ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = col_widths.get(h, 12)
+
+            # 冻结首行
+            ws.freeze_panes = "A2"
+
+            wb.save(str(xlsx_path))
+            file_key = c.upload_file(str(xlsx_path))
+            c.send_file(chat_id, file_key)
+            print(f"   📎 XLSX: {xlsx_path.name}")
+        except ImportError:
+            pass  # openpyxl 未安装，静默跳过
+        except Exception as e:
+            print(f"   ⚠️  XLSX 失败: {e}", file=__import__("sys").stderr)
+        finally:
+            xlsx_path.unlink(missing_ok=True)
+
+        # ── 发送汇总卡片（含在线表格链接） ──
+        elements = [
+            c.card_markdown(
+                f"共 **{len(tracks)}** 首曲目数据已导出\n"
+                f"📎 CSV + XLSX 文件见上方\n"
+                f"📊 在线表格支持排序、筛选、团队共享"
+            ),
+        ]
+        if bitable_url:
+            elements.append(c.card_button("📊 打开在线表格", bitable_url))
         card = c.build_card(
             f"📊 {playlist.title} — 完整数据",
-            [
-                c.card_markdown(
-                    f"共 **{len(tracks)}** 首曲目的完整数据已写入在线表格\n"
-                    f"可在线查看、排序、筛选，支持团队共享"
-                ),
-                c.card_button("📊 打开在线表格", url),
-            ],
+            elements,
             color="green",
         )
         c.send_card(chat_id, card)
-        print(f"   📊 在线表格已创建: {bitable_name} ({len(tracks)} 首)")
-        print(f"   🔗 {url}")
 
     def create_song_document(self, song: Song) -> str:
         """创建飞书文档记录歌曲详情。
