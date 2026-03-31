@@ -1379,7 +1379,9 @@ class FeishuPusher:
         bitable_name = f"{safe_title}_{date_str}"
 
         # 字段类型: 1=文本, 2=数字, 5=日期, 15=超链接
+        # 首个字段自动成为 primary column（不可删改），用"序号"作为首列
         fields = [
+            ("序号", 1),
             ("song_id", 1),
             ("歌名", 1),
             ("歌手", 1),
@@ -1403,9 +1405,10 @@ class FeishuPusher:
 
         # ── 批量写入记录（每次最多 500 条） ──
         records = []
-        for t in tracks:
+        for i, t in enumerate(tracks, 1):
             link_val = {"text": t.name, "link": t.resolved_url} if t.resolved_url else t.resolved_url
             records.append({"fields": {
+                "序号": str(i),
                 "song_id": t.song_id,
                 "歌名": t.name,
                 "歌手": t.artist,
