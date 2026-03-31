@@ -327,6 +327,9 @@ python3 music_toolkit.py playlist-detail "https://music.163.com/playlist?id=1766
 # QQ 音乐歌单（基础信息，单曲统计不可用）
 python3 music_toolkit.py playlist-detail "https://y.qq.com/n/ryqq_v2/playlist/9582035807"
 
+# 酷狗歌单（无需 cookie：仅前 10 首 + 歌单基本信息）
+python3 music_toolkit.py playlist-detail "https://m.kugou.com/songlist/gcid_xxx/"
+
 # 同时下载每首歌的歌词文件（.lrc + .txt）
 python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" \
   --lyrics --dir ~/Downloads/lyrics
@@ -342,19 +345,41 @@ python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkN
 
 不同平台的公开 API 开放程度差异很大，直接决定了能抓到的数据粒度：
 
+**不需要 cookie（当前实现）**
+
 | 数据项 | 汽水音乐 | 网易云 | QQ音乐 | 酷狗 |
 |--------|:--------:|:------:|:------:|:----:|
-| 歌单基本信息 | ✅ | ✅ | ✅ | ❌ |
-| 曲目列表 | ✅ | ✅ | ✅ | ❌ |
-| 单曲评论数 | ✅ | ✅ batch API | ❌ | ❌ |
+| 歌单基本信息 | ✅ | ✅ | ✅ | ✅ |
+| 曲目列表（全部） | ✅ | ✅ | ✅ | ⚠️ 仅前 10 首 |
+| 单曲评论数 | ✅ | ✅ 批量 API | ❌ | ❌ |
 | 单曲收藏数 | ✅ | ❌ | ❌ | ❌ |
 | 单曲分享数 | ✅ | ❌ | ❌ | ❌ |
 | 发布日期 | ✅ | ✅ | ✅ | ❌ |
-| 实现方式 | SSR 页面内嵌 `_ROUTER_DATA`，一次 GET 全拿 | `/api/v6/playlist/detail` + `/api/batch` 批量评论 | `fcg_ucc_getcdinfo_byids_cp.fcg` 旧版 API | 签名密钥已更新，无可用公开 API |
 
-**为什么汽水能拿全部数据？** 汽水音乐采用服务端渲染 (SSR)，打开分享链接时服务器直接将所有统计数据写入 HTML 的 `_ROUTER_DATA` 变量。网易云和 QQ 音乐是纯 SPA 架构，数据靠前端 JS 异步加载，公开 API 有选择性地封锁了互动统计。
+**配合 cookie 后（展望）**
 
-所有实现均为纯 HTTP 请求，**无需 cookie / 登录 / 特殊环境**，任何机器都可运行。
+| 数据项 | 汽水音乐 | 网易云 | QQ音乐 | 酷狗 |
+|--------|:--------:|:------:|:------:|:----:|
+| 曲目列表（全部） | ✅ 已满 | ✅ 已满 | ✅ 已满 | ✅ 可获取全部 |
+| 单曲评论数 | ✅ 已满 | ✅ 已满 | ⚠️ 有接口但需签名 | ❌ 平台不开放 |
+| 单曲收藏/分享 | ✅ 已满 | ❌ 平台不开放 | ❌ 平台不开放 | ❌ 平台不开放 |
+
+**技术本质差异**
+
+| 平台 | 架构 | 为什么汽水最好抓 |
+|------|------|----------------|
+| 汽水音乐 | SSR，数据内嵌 `_ROUTER_DATA` | 服务端渲染，一次 GET 全拿，收藏/评论/分享全开放 |
+| 网易云 | SPA，数据异步加载 | 有 `/api/batch` 可批量拿评论数，收藏/分享不开放 |
+| QQ 音乐 | SPA，数据异步加载 | 旧版 fcg API 返回曲目列表，统计数据被封 |
+| 酷狗 | SPA + 强签名保护 | SSR 仅嵌入前 10 首；完整列表需登录 cookie + 签名 |
+
+**如何获取酷狗 cookie（解锁全部曲目）**
+
+1. 浏览器打开 [www.kugou.com](https://www.kugou.com) 并登录
+2. F12 → Network → 任意一个 kugou.com 请求 → Request Headers → 复制 `Cookie` 字段
+3. 设置环境变量 `KUGOU_COOKIE="..."` 或在 go-music-dl Web 界面（`localhost:8080` 右下角齿轮）粘贴
+
+> 所有无需 cookie 的实现均为纯 HTTP 请求，**任何机器都可运行，无需登录**。酷狗 10 首限制是服务端 SSR 限制，与登录状态无关。
 
 CLI 输出示例（演示歌单：[w. — w.](https://qishui.douyin.com/s/ixrkNUQa/)，27 首）：
 
@@ -413,7 +438,7 @@ python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
 | 下载歌单 + 发群 + 歌词文档 | `download-playlist <id> <source> --send-chat oc_xxx --lyrics-doc` |
 | 解析链接并下载 | `parse-url "<url>" --download` |
 | **单曲数据监控** | `music-detail "<share_url>"` |
-| **歌单数据监控** | `playlist-detail "<share_url>"` (汽水/网易云/QQ) |
+| **歌单数据监控** | `playlist-detail "<share_url>"` (汽水/网易云/QQ/酷狗) |
 | **歌单数据 + 推飞书** | `push-playlist-detail "<share_url>"` |
 | **歌单数据 + 下载歌词** | `playlist-detail "<share_url>" --lyrics --dir ./lyrics` |
 | **批量抓取数据** | `music-detail-batch --file urls.txt` |
@@ -490,7 +515,7 @@ python3 -m pytest tests/ -v
 
 ## 实测验证
 
-以下示例均经过真实环境验证（2026-03-30）：
+以下示例均经过真实环境验证（2026-03-30 / 2026-04-01）：
 
 ### Flow A: 单曲下载 + 发群
 
@@ -510,20 +535,40 @@ python3 music_toolkit.py download-send 0039MnYb0qxYhV qq \
 | 汽水音乐 | `7602191490944712731` | 112 首 | 112/112 | 849 MB (206 片) | [文档链接](https://feishu.cn/docx/Gxu0dI2Kso8px1xkvnYckeTvnYd) |
 
 ```bash
-# QQ 音乐
 python3 music_toolkit.py download-playlist 9582035807 qq \
   --dir ~/Music/qq --send-chat oc_xxx --lyrics-doc
 
-# 网易云音乐
 python3 music_toolkit.py download-playlist 17662978875 netease \
   --dir ~/Music/netease --send-chat oc_xxx --lyrics-doc
 
-# 汽水音乐（从分享链接 https://qishui.douyin.com/s/i9AVQFPK/ 提取 ID）
 python3 music_toolkit.py download-playlist 7602191490944712731 soda \
   --dir ~/Music/soda --send-chat oc_xxx --lyrics-doc
 ```
 
-每首歌下载 3 个文件：`.mp3`（音频）+ `.lrc`（带时间轴歌词）+ `.txt`（纯文本歌词）。zip 打包后通过飞书云盘分片上传，群内收到 1 条卡片消息（含下载链接）+ 1 条歌词文档链接。
+每首歌下载 3 个文件：`.mp3` + `.lrc`（带时间轴）+ `.txt`（纯文本）。zip 打包后通过飞书云盘分片上传，群内收到 1 条卡片消息 + 1 条歌词文档链接。
+
+### Flow C: 歌单数据监控 + 飞书卡片（v0.3.0 新增）
+
+| 平台 | 歌单 | 曲目 | 评论数 | 收藏/分享 |
+|------|------|------|--------|-----------|
+| 汽水音乐 | [w. — w.](https://qishui.douyin.com/s/ixrkNUQa/) | 27 首全部 | ✅ | ✅ |
+| 网易云 | [陶喆精选](https://music.163.com/playlist?id=17662978875) | 15 首全部 | ✅ 批量 | ❌ |
+| QQ音乐 | [何玄歌单](https://y.qq.com/n/ryqq_v2/playlist/9582035807) | 25 首全部 | ❌ | ❌ |
+| 酷狗 | [lgy — 每日推荐](https://m.kugou.com/songlist/gcid_3zvpukfkz4z092/) | 10/30 首 | ❌ | ❌ |
+
+```bash
+# 汽水 — 完整统计，按点赞降序
+python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --sort likes
+
+# 网易云 — 含评论数，按评论降序
+python3 music_toolkit.py push-playlist-detail "https://music.163.com/playlist?id=17662978875" --sort comments
+
+# QQ 音乐 — 基础曲目，按日期升序
+python3 music_toolkit.py push-playlist-detail "https://y.qq.com/n/ryqq_v2/playlist/9582035807" --sort date --asc
+
+# 酷狗 — 前 10 首 + 歌单基本信息
+python3 music_toolkit.py push-playlist-detail "https://m.kugou.com/songlist/gcid_3zvpukfkz4z092/"
+```
 
 ## License
 
