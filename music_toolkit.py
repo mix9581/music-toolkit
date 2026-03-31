@@ -1223,8 +1223,9 @@ class FeishuPusher:
 
         卡片结构:
           - Header: 歌单标题  副标题: 创建者 · N 首
-          - Fields: 更新日期、歌单统计
-          - 曲目列表: 序号、歌名（跳转链接）、歌手、点赞/评论/分享
+          - Fields: 更新日期、收藏、分享数
+          - 列对齐曲目表: card_column_set 每行一首，数字列严格对齐
+          - 底部备注
 
         Args:
             playlist: PlaylistDetailInfo 对象
@@ -1235,6 +1236,7 @@ class FeishuPusher:
             飞书 API 响应
         """
         import datetime as _dt
+        c = self._client
         cid = self._resolve_chat_id(chat_id)
 
         # ── 歌单基本信息（fields 双列） ──
@@ -1252,49 +1254,76 @@ class FeishuPusher:
 
         elements = []
         if fields:
-            elements.append(self._client.card_fields(fields))
+            elements.append(c.card_fields(fields))
 
-        # ── 曲目列表（Markdown 表格，数字列右对齐）──
+        # ── 曲目列表：card_column_set 逐行对齐 ──
         if playlist.tracks:
             display_tracks = (
                 playlist.tracks if not max_tracks else playlist.tracks[:max_tracks]
             )
-            # 表头
-            rows = [
-                "| # | 歌曲 | 点赞 | 评论 | 分享 |",
-                "|:--|:-----|-----:|-----:|-----:|",
-            ]
+
+            elements.append(c.card_divider())
+
+            # 列标题行（用 md_tag 彩色胶囊）
+            elements.append(c.card_column_set(
+                c.card_column(
+                    [c.card_markdown("**歌曲名 — 歌手**")],
+                    weight=5,
+                ),
+                c.card_column(
+                    [c.card_markdown(c.md_tag("点赞", "blue"))],
+                    weight=2,
+                ),
+                c.card_column(
+                    [c.card_markdown(c.md_tag("评论", "turquoise"))],
+                    weight=2,
+                ),
+                c.card_column(
+                    [c.card_markdown(c.md_tag("分享", "violet"))],
+                    weight=2,
+                ),
+            ))
+
+            # 每首歌一行
             for i, t in enumerate(display_tracks, 1):
                 link = t.resolved_url or (
                     f"https://music.douyin.com/qishui/share/track?track_id={t.song_id}"
                     if t.song_id else ""
                 )
-                name_part = f"[{t.name}]({link})" if link else t.name
-                rows.append(
-                    f"| {i} | {name_part} — {t.artist}"
-                    f" | {t.favorites:,} | {t.comments:,} | {t.shares:,} |"
-                )
-            if max_tracks and len(playlist.tracks) > max_tracks:
-                rows.append(
-                    f"| ... | _共 {len(playlist.tracks)} 首，仅显示前 {max_tracks} 首_ | | | |"
-                )
+                name_md = f"[{t.name}]({link}) — {t.artist}" if link else f"{t.name} — {t.artist}"
+                elements.append(c.card_column_set(
+                    c.card_column(
+                        [c.card_markdown(f"{i}. {name_md}")],
+                        weight=5,
+                    ),
+                    c.card_column(
+                        [c.card_markdown(f"{t.favorites:,}")],
+                        weight=2,
+                    ),
+                    c.card_column(
+                        [c.card_markdown(f"{t.comments:,}")],
+                        weight=2,
+                    ),
+                    c.card_column(
+                        [c.card_markdown(f"{t.shares:,}")],
+                        weight=2,
+                    ),
+                ))
 
-            elements.append(self._client.card_divider())
-            elements.append(self._client.card_markdown("\n".join(rows)))
+            if max_tracks and len(playlist.tracks) > max_tracks:
+                elements.append(c.card_note(
+                    c.note_md(f"... 共 {len(playlist.tracks)} 首，仅显示前 {max_tracks} 首")
+                ))
 
         # ── 底部备注 ──
         today = _dt.date.today().strftime("%Y-%m-%d")
-        elements.append(self._client.card_note(
-            self._client.note_md(
-                f"数据来源: {playlist.source_name}  ·  抓取于 {today}"
-            )
+        elements.append(c.card_note(
+            c.note_md(f"数据来源: {playlist.source_name}  ·  抓取于 {today}")
         ))
 
         subtitle = f"{playlist.creator}  ·  {len(playlist.tracks)} 首"
-        card = self._client.build_card(
-            playlist.title, elements, color="wathet", subtitle=subtitle
-        )
-        return self._client.send_card(cid, card)
+        card = c.build_card(playlist.title, elements, color="wathet", subtitle=subtitle)
+        return c.send_card(cid, card)
 
     def create_song_document(self, song: Song) -> str:
         """创建飞书文档记录歌曲详情。
