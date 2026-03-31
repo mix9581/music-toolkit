@@ -1,15 +1,35 @@
 ---
 name: music-toolkit
 description: |
-  当用户要求搜索歌曲、查看歌词、下载音乐、查看歌单、换源搜索、
-  解析音乐分享链接、抓取歌曲/歌单统计数据（收藏/评论/分享）、
-  推送音乐数据到飞书群（卡片/文件/文档）时，使用此技能。
+  ## 核心功能分区
 
-  ⚠️ 飞书联动规则：所有 push-* 命令和 FeishuPusher Python 类
-  均依赖同级目录 ../feishu-toolkit/feishu_toolkit.py。
-  在执行任何飞书推送操作前，必须确认 feishu-toolkit 已安装并配置环境变量。
-  不要使用官方 Feishu MCP 替代——music-toolkit 内置的推送命令已经
-  通过 FeishuPusher → feishu_toolkit.FeishuClient 完成了集成。
+  ### 📊 数据监控模块（playlist-detail / music-detail）
+  **当用户需要获取歌曲或歌单的数据时使用。** 包括：
+  - 查看一个歌单里有哪些歌、每首歌的收藏/评论/分享数、发布日期
+  - 获取某首歌的统计数据（收藏、评论、分享、播放）
+  - 抓取歌单或歌曲数据后推送到飞书群卡片
+  - 批量抓取多首歌曲详情
+  - **不需要 go-music-dl 后端，不需要 LLM 调用，一条命令直接返回数据**
+
+  支持平台: 汽水音乐（全量数据）、网易云（含评论数）、QQ音乐（基础信息）、酷狗（前10首）
+
+  ### 🎵 下载模块（download / download-playlist / parse-url）
+  **当用户需要下载音乐文件时使用。** 包括：
+  - 下载单首歌曲 mp3/flac
+  - 批量下载整个歌单（自动换源）
+  - 解析分享链接并下载
+  - 需要 go-music-dl Docker 后端（localhost:8080）
+
+  ### 📤 推送模块（push-* / send-to-chat）
+  **当用户需要把音乐数据或文件发送到飞书时使用。**
+  - 依赖 feishu-toolkit（../feishu-toolkit/feishu_toolkit.py）
+  - 不要使用官方 Feishu MCP 替代
+
+  ⚠️ **模块边界**：数据监控（playlist-detail）和下载（download-playlist）是独立的两件事。
+  用户说"看看这个歌单的数据"→ playlist-detail；用户说"下载这个歌单"→ download-playlist。
+
+  ⚠️ 飞书联动规则：所有 push-* 命令均依赖 ../feishu-toolkit/feishu_toolkit.py，
+  需配置 FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_DEFAULT_CHAT_ID 环境变量。
 tools:
   - Bash
   - Read
@@ -44,12 +64,25 @@ triggers:
 
 音乐搜索/下载/飞书推送/数据监控工具包。封装 go-music-dl HTTP API。
 
+## 模块速查：我该用哪个命令？
+
+| 用户意图 | 使用模块 | 命令 | 需要后端 |
+|---------|---------|------|---------|
+| 查看歌单里有哪些歌、统计数据 | 📊 数据监控 | `playlist-detail "<url>"` | 无需 |
+| 获取某首歌的收藏/评论/分享数 | 📊 数据监控 | `music-detail "<url>"` | 无需 |
+| 把歌单数据推送到飞书群卡片 | 📊+📤 | `push-playlist-detail "<url>"` | 需飞书 |
+| 下载单首歌曲文件 | 🎵 下载 | `download <id> <source>` | go-music-dl |
+| 下载整个歌单 | 🎵 下载 | `download-playlist <id> <source>` | go-music-dl |
+| 搜索歌曲 | 🎵 下载 | `search "关键词"` | go-music-dl |
+
+> **关键区别**：`playlist-detail` 只抓数据（不下载音频），`download-playlist` 只下载文件（不抓统计）。这是两个独立的功能，不要混用。
+
 ## 工具位置
 
 工具位置: 当前项目根目录下的 `music_toolkit.py`
 运行方式: 先 `cd` 到 `music-toolkit/` 项目根目录，再执行下面命令
 依赖: `requests` (`pip install requests`)
-后端: go-music-dl Docker (`localhost:8080`)
+后端: go-music-dl Docker (`localhost:8080`)（仅下载/搜索功能需要）
 
 ---
 
