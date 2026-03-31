@@ -1246,10 +1246,6 @@ class FeishuPusher:
             飞书 API 响应
         """
         import datetime as _dt
-        import csv
-        import io
-        import tempfile
-        from pathlib import Path
 
         c = self._client
         cid = self._resolve_chat_id(chat_id)
@@ -1371,19 +1367,45 @@ class FeishuPusher:
         chat_id: str,
         date_str: str,
     ) -> None:
-        """生成歌单 CSV 并发送到飞书群。
+        """创建飞书在线表格并发送链接卡片到群。
 
-        CSV 包含所有曲目（不受卡片显示数量限制）。
+        在线表格包含所有曲目完整数据（不受卡片显示数量限制），
+        可在线查看、排序、筛选，团队共享。
         """
-        import csv
-        import tempfile
-        from pathlib import Path
+        c = self._client
 
-        # 构建 CSV 内容
-        rows = []
-        for i, t in enumerate(tracks, 1):
-            rows.append({
-                "#": i,
+        # ── 创建多维表格 + 定义字段 ──
+        safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', playlist.title)[:40]
+        bitable_name = f"{safe_title}_{date_str}"
+
+        # 字段类型: 1=文本, 2=数字, 5=日期, 15=超链接
+        fields = [
+            ("song_id", 1),
+            ("歌名", 1),
+            ("歌手", 1),
+            ("时长", 1),
+            ("专辑", 1),
+            ("发布日期", 1),
+            ("收藏", 2),
+            ("评论", 2),
+            ("分享", 2),
+            ("播放", 2),
+            ("链接", 15),
+        ]
+
+        try:
+            app_token, table_id, url = c.create_bitable_with_fields(
+                bitable_name, fields,
+            )
+        except Exception as e:
+            print(f"   ⚠️  创建在线表格失败: {e}", file=__import__("sys").stderr)
+            return
+
+        # ── 批量写入记录（每次最多 500 条） ──
+        records = []
+        for t in tracks:
+            link_val = {"text": t.name, "link": t.resolved_url} if t.resolved_url else t.resolved_url
+            records.append({"fields": {
                 "song_id": t.song_id,
                 "歌名": t.name,
                 "歌手": t.artist,
@@ -1394,29 +1416,38 @@ class FeishuPusher:
                 "评论": t.comments,
                 "分享": t.shares,
                 "播放": t.plays,
-                "链接": t.resolved_url,
-            })
+                "链接": link_val,
+            }})
 
-        # 写入临时文件（文件名决定飞书显示名，直接用正式文件名）
-        safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', playlist.title)[:40]
-        filename = f"{safe_title}_{date_str}.csv"
+        for i in range(0, len(records), 500):
+            batch = records[i:i + 500]
+            try:
+                c.create_bitable_records(app_token, table_id, batch)
+            except Exception as e:
+                print(f"   ⚠️  写入记录失败 (batch {i // 500 + 1}): {e}",
+                      file=__import__("sys").stderr)
 
-        import tempfile, os
-        tmp_dir = Path(tempfile.gettempdir())
-        tmp_path = tmp_dir / filename
-        with open(tmp_path, "w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(rows)
-
+        # ── 设置分享权限 ──
         try:
-            file_key = self._client.upload_file(str(tmp_path))
-            self._client.send_file(chat_id, file_key)
-            print(f"   📎 CSV 已发送: {filename} ({len(rows)} 首)")
-        except Exception as e:
-            print(f"   ⚠️  CSV 发送失败: {e}", file=__import__("sys").stderr)
-        finally:
-            tmp_path.unlink(missing_ok=True)
+            c.set_drive_public_permission(app_token, file_type="bitable")
+        except Exception:
+            pass
+
+        # ── 发送链接卡片到群 ──
+        card = c.build_card(
+            f"📊 {playlist.title} — 完整数据",
+            [
+                c.card_markdown(
+                    f"共 **{len(tracks)}** 首曲目的完整数据已写入在线表格\n"
+                    f"可在线查看、排序、筛选，支持团队共享"
+                ),
+                c.card_button("📊 打开在线表格", url),
+            ],
+            color="green",
+        )
+        c.send_card(chat_id, card)
+        print(f"   📊 在线表格已创建: {bitable_name} ({len(tracks)} 首)")
+        print(f"   🔗 {url}")
 
     def create_song_document(self, song: Song) -> str:
         """创建飞书文档记录歌曲详情。
