@@ -8,6 +8,7 @@
 <p align="center">
   <a href="#quick-start">快速开始</a> ·
   <a href="#playlist-workflow">歌单下载</a> ·
+  <a href="#data-monitor">数据监控</a> ·
   <a href="#feishu">飞书推送</a> ·
   <a href="#lyrics-doc">歌词文档</a> ·
   <a href="#api">API 参考</a>
@@ -58,15 +59,16 @@ go-music-dl   feishu-toolkit (可选)
 # 1. 启动 go-music-dl 后端
 docker run -d --name go-music-dl -p 8080:8080 guohuiyuan/go-music-dl:latest
 
-# 2. 克隆项目
-git clone https://github.com/mix9581/music-toolkit.git ~/music-toolkit
-cd ~/music-toolkit
+# 2. 克隆项目（可放在任意目录，建议与 feishu-toolkit 同级）
+git clone https://github.com/mix9581/music-toolkit.git
+cd /path/to/music-toolkit
 
 # 3. 安装依赖
 pip install requests
 
 # 4. (可选) 安装 feishu-toolkit — 解锁飞书推送能力
-git clone https://github.com/mix9581/feishu-toolkit.git ~/feishu-toolkit
+# 建议与 music-toolkit 放在同一父目录；也可设置 FEISHU_TOOLKIT_PATH 指向它
+git clone https://github.com/mix9581/feishu-toolkit.git ../feishu-toolkit
 export FEISHU_APP_ID="cli_xxx"
 export FEISHU_APP_SECRET="xxx"
 export FEISHU_DEFAULT_CHAT_ID="oc_xxx"
@@ -287,6 +289,87 @@ python3 music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --we
 
 支持的链接：网易云 `music.163.com`、QQ音乐 `y.qq.com`、其他平台分享链接。
 
+<h2 id="data-monitor">数据监控</h2>
+
+### 歌曲详情抓取
+
+从平台分享链接抓取歌曲的完整统计数据（收藏/评论/分享/播放、音频直链、歌词等），无需 go-music-dl 服务。
+
+```bash
+# 单曲详情（汽水 / 网易云 / QQ音乐）
+python3 music_toolkit.py music-detail "https://qishui.douyin.com/s/ixrhHvct/"
+
+# 同时显示完整歌词
+python3 music_toolkit.py music-detail "https://qishui.douyin.com/s/ixrhHvct/" --lyrics
+
+# 显示同艺人 / 相关曲目（汽水音乐，无额外请求）
+python3 music_toolkit.py music-detail "https://qishui.douyin.com/s/ixrhHvct/" --related
+
+# 输出 JSON 方便程序处理
+python3 music_toolkit.py music-detail "https://qishui.douyin.com/s/ixrhHvct/" --json
+```
+
+输出字段示例（汽水音乐）：歌曲 ID、歌手、专辑、时长、发布日期、曲风、语言、作曲/作词、音质选项、封面、音频直链（~24h 有效）、收藏/评论/分享数、完整 LRC 歌词。
+
+### 歌单详情抓取 + 飞书推送
+
+从歌单分享链接获取歌单统计数据和全部曲目信息，**只抓数据，不下载音乐**（可选下载歌词 `.lrc`）。
+
+```bash
+# 歌单详情（含所有曲目统计）
+python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/"
+
+# 同时下载每首歌的歌词文件（.lrc + .txt）
+python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" \
+  --lyrics --dir ~/Downloads/lyrics
+
+# 输出 JSON（含完整曲目数组）
+python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --json
+
+# 抓取后直接推送到飞书群（需配置 App 环境变量）
+python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/"
+```
+
+CLI 输出示例（演示歌单：[w. — w.](https://qishui.douyin.com/s/ixrkNUQa/)，27 首）：
+
+```
+────────────────────────────────────────────────────────────
+📋  w.
+────────────────────────────────────────────────────────────
+   创建者:  w .
+   歌曲数:  27
+   平台:    Soda音乐 [soda]
+   歌单ID:  7598064834160525338
+   创建:    2026-01-26
+   更新:    2026-03-31
+
+  #    歌名                       歌手     收藏        评论      分享
+  1    定数                       w.      16,260        69       549
+  2    一定要拥有吗               w.      28,366       216     2,683
+  6    凝视                       w.     263,396     1,853    10,439
+  ...
+  27   过期的伞                   w.     361,689     8,497    24,806
+```
+
+飞书卡片效果（`push-playlist-detail`）：
+
+- Header 显示歌单名，副标题显示创建者和曲目总数
+- Fields 区域：更新时间、收藏数、分享数
+- 曲目列表：序号 · **歌名（蓝色跳转链接）** — 歌手  点赞 xx  评论 xx  分享 xx
+- 底部备注：数据来源 + 抓取日期
+
+批量抓取多首歌曲详情：
+
+```bash
+# 多个 URL 空格分隔
+python3 music_toolkit.py music-detail-batch \
+  "https://qishui.douyin.com/s/URL1/" \
+  "https://qishui.douyin.com/s/URL2/"
+
+# 从文件读取 URL��每行一个，# 开头为注释）
+python3 music_toolkit.py music-detail-batch --file urls.txt --delay 2.0
+```
+
 ### 换源搜索
 
 ```bash
@@ -299,15 +382,21 @@ python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
 |------|------|
 | 搜歌 | `search "晴天"` |
 | 下载单曲 | `download <id> <source>` |
-| 单曲下载 + 发群 | `download-send <id> <source> --name "晴天" --artist "周杰��"` |
+| 单曲下载 + 发群 | `download-send <id> <source> --name "晴天" --artist "周杰伦"` |
 | 下载歌单 | `download-playlist <id> <source> --dir ~/Music` |
 | 下载歌单 + 发群 + 歌词文档 | `download-playlist <id> <source> --send-chat oc_xxx --lyrics-doc` |
 | 解析链接并下载 | `parse-url "<url>" --download` |
+| **单曲数据监控** | `music-detail "<share_url>"` |
+| **歌单数据监控** | `playlist-detail "<share_url>"` |
+| **歌单数据 + 推飞书** | `push-playlist-detail "<share_url>"` |
+| **歌单数据 + 下载歌词** | `playlist-detail "<share_url>" --lyrics --dir ./lyrics` |
+| **批量抓取数据** | `music-detail-batch --file urls.txt` |
 | 推送到飞书 (webhook) | `push-webhook "晴天" "<webhook_url>"` |
 | 推送到飞书 (App API) | `push-search "晴天"` |
 | 发文件到群 | `send-to-chat ~/Music/*.mp3` |
 
-> 所有命令前缀: `python3 ~/music-toolkit/music_toolkit.py`
+> 先进入项目目录：`cd /path/to/music-toolkit`
+> 所有命令前缀: `python3 music_toolkit.py`
 
 <h2 id="api">Python API</h2>
 
@@ -349,7 +438,7 @@ pusher.create_playlist_lyrics_doc(songs, "歌词")   # 创建歌词文档
 
 ```bash
 # 安装为 Claude Code Skill
-cp -r ~/music-toolkit/skill ~/.claude/skills/music-toolkit
+cp -r ./skill ~/.claude/skills/music-toolkit
 ```
 
 安装后，对 AI 说 "搜索歌曲"、"下载歌单"、"推送到飞书" 等自然语言指令即可。

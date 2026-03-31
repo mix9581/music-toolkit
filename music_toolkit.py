@@ -137,6 +137,98 @@ class InspectResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class SongDetailInfo:
+    """从平台页面/API 抓取的歌曲详情（含收藏、评论、分享等统计）。"""
+    song_id: str
+    platform: str
+    name: str
+    artist: str
+    duration: int          # 时长（秒）
+    cover: str             # 封面图 URL
+    album: str
+    album_id: str          # 专辑 ID
+    publish_date: str      # 发布日期 YYYY-MM-DD
+    favorites: int         # 收藏数
+    comments: int          # 评论数
+    shares: int            # 分享数
+    plays: int             # 播放/使用数
+    audio_url: str         # 音频 CDN 直链（临时有效，通常 24h）
+    lyrics_lrc: str        # LRC 格式歌词（含时间轴）
+    genre: str             # 曲风
+    language: str          # 语言代码（如 ZH / EN）
+    composers: str         # 作曲（逗号分隔）
+    lyricists: str         # 作词（逗号分隔）
+    qualities: str         # 音质选项（如 "medium(68k) / higher(132k) / lossless"）
+    share_url: str         # 原始分享链接
+    resolved_url: str      # 解析后的完整 URL
+    extra: dict = field(default_factory=dict)  # 平台原始数据（含更多字段）
+
+    @property
+    def duration_str(self) -> str:
+        if self.duration <= 0:
+            return "0:00"
+        minutes = self.duration // 60
+        seconds = self.duration % 60
+        return f"{minutes}:{seconds:02d}"
+
+    @property
+    def lyrics_text(self) -> str:
+        """纯文本歌词（去除时间轴）"""
+        lines = []
+        for line in self.lyrics_lrc.splitlines():
+            text = re.sub(r'\[\d+:\d+[\.\d]*\]', '', line).strip()
+            if text:
+                lines.append(text)
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        result = asdict(self)
+        result["duration_str"] = self.duration_str
+        result["lyrics_text"] = self.lyrics_text
+        return result
+
+
+@dataclass(frozen=True)
+class PlaylistDetailInfo:
+    """歌单详情数据模型（数据监控用，不含歌曲下载）"""
+    playlist_id: str
+    platform: str
+    title: str
+    creator: str
+    cover: str
+    track_count: int
+    create_time: str      # YYYY-MM-DD
+    update_time: str      # YYYY-MM-DD
+    description: str
+    tracks: tuple         # tuple[SongDetailInfo]
+    share_url: str
+    resolved_url: str
+    extra: dict = field(default_factory=dict)
+
+    @property
+    def source_name(self) -> str:
+        return PLATFORMS.get(self.platform, self.platform)
+
+    def to_dict(self) -> dict:
+        return {
+            "playlist_id": self.playlist_id,
+            "platform": self.platform,
+            "source_name": self.source_name,
+            "title": self.title,
+            "creator": self.creator,
+            "cover": self.cover,
+            "track_count": self.track_count,
+            "create_time": self.create_time,
+            "update_time": self.update_time,
+            "description": self.description,
+            "share_url": self.share_url,
+            "resolved_url": self.resolved_url,
+            "extra": self.extra,
+            "tracks": [t.to_dict() for t in self.tracks],
+        }
+
+
 @dataclass
 class DownloadResult:
     """单首歌曲下载结果"""
@@ -953,7 +1045,7 @@ def _sanitize_filename(filename: str) -> str:
 class FeishuPusher:
     """飞书推送器 — 将音乐数据推送到飞书群。
 
-    依赖 feishu_toolkit.py (~/feishu-toolkit/feishu_toolkit.py)。
+    依赖 feishu_toolkit.py（优先查找同级 `feishu-toolkit/` 目录）。
 
     Args:
         app_id: 飞书应用 ID
@@ -1119,6 +1211,84 @@ class FeishuPusher:
 
         title = f"📋 {playlist.name}"
         card = self._client.build_card(title, elements, color="purple")
+        return self._client.send_card(cid, card)
+
+    def push_playlist_detail_card(
+        self,
+        playlist: "PlaylistDetailInfo",
+        chat_id: str = None,
+        max_tracks: int = 0,
+    ) -> dict:
+        """推送歌单详情卡片（含曲目统计数据）到飞书群。
+
+        卡片结构:
+          - Header: 歌单标题  副标题: 创建者 · N 首
+          - Fields: 更新日期、歌单统计
+          - 曲目列表: 序号、歌名（跳转链接）、歌手、点赞/评论/分享
+
+        Args:
+            playlist: PlaylistDetailInfo 对象
+            chat_id: 目标群组 ID
+            max_tracks: 最多显示曲目数（0 = 全部）
+
+        Returns:
+            飞书 API 响应
+        """
+        import datetime as _dt
+        cid = self._resolve_chat_id(chat_id)
+
+        # ── 歌单基本信息（fields 双列） ──
+        fields = []
+        if playlist.update_time:
+            fields.append((f"**更新时间**\n{playlist.update_time}", True))
+        if playlist.create_time:
+            fields.append((f"**创建时间**\n{playlist.create_time}", True))
+        if playlist.extra.get("collect_count"):
+            fields.append((f"**收藏**\n{playlist.extra['collect_count']:,}", True))
+        if playlist.extra.get("share_count"):
+            fields.append((f"**分享**\n{playlist.extra['share_count']:,}", True))
+        if playlist.extra.get("play_count"):
+            fields.append((f"**播放**\n{playlist.extra['play_count']:,}", True))
+
+        elements = []
+        if fields:
+            elements.append(self._client.card_fields(fields))
+
+        # ── 曲目列表 ──
+        if playlist.tracks:
+            display_tracks = (
+                playlist.tracks if not max_tracks else playlist.tracks[:max_tracks]
+            )
+            lines = []
+            for i, t in enumerate(display_tracks, 1):
+                # 歌曲跳转链接（汽水音乐）
+                link = t.resolved_url or (
+                    f"https://music.douyin.com/qishui/share/track?track_id={t.song_id}"
+                    if t.song_id else ""
+                )
+                name_part = f"[{t.name}]({link})" if link else t.name
+                lines.append(
+                    f"{i}.  {name_part} — {t.artist}"
+                    f"  点赞 {t.favorites:,}  评论 {t.comments:,}  分享 {t.shares:,}"
+                )
+            if max_tracks and len(playlist.tracks) > max_tracks:
+                lines.append(f"_...共 {len(playlist.tracks)} 首，仅显示前 {max_tracks} 首_")
+
+            elements.append(self._client.card_divider())
+            elements.append(self._client.card_markdown("\n".join(lines)))
+
+        # ── 底部备注 ──
+        today = _dt.date.today().strftime("%Y-%m-%d")
+        elements.append(self._client.card_note(
+            self._client.note_md(
+                f"数据来源: {playlist.source_name}  ·  抓取于 {today}"
+            )
+        ))
+
+        subtitle = f"{playlist.creator}  ·  {len(playlist.tracks)} 首"
+        card = self._client.build_card(
+            playlist.title, elements, color="wathet", subtitle=subtitle
+        )
         return self._client.send_card(cid, card)
 
     def create_song_document(self, song: Song) -> str:
@@ -1515,11 +1685,21 @@ def _push_playlist_download_report(
 
 def _import_feishu_client():
     """动态导入 FeishuClient"""
+    env_path = os.environ.get("FEISHU_TOOLKIT_PATH", "").strip()
+    project_root = os.path.abspath(os.path.dirname(__file__))
+    workspace_root = os.path.abspath(os.path.join(project_root, ".."))
     feishu_paths = [
+        env_path,
+        os.path.join(workspace_root, "feishu-toolkit"),
+        os.path.join(os.getcwd(), "feishu-toolkit"),
+        os.path.join(os.path.abspath(os.path.join(os.getcwd(), "..")), "feishu-toolkit"),
+        os.path.expanduser("~/claude-workspaces/feishu-toolkit"),
         os.path.expanduser("~/feishu-toolkit"),
-        os.path.join(os.path.dirname(__file__), "..", "feishu-toolkit"),
     ]
     for p in feishu_paths:
+        if not p:
+            continue
+        p = os.path.abspath(os.path.expanduser(p))
         if os.path.isfile(os.path.join(p, "feishu_toolkit.py")):
             if p not in sys.path:
                 sys.path.insert(0, p)
@@ -1530,9 +1710,759 @@ def _import_feishu_client():
         return FeishuClient
     except ImportError:
         raise ImportError(
-            "feishu_toolkit.py 未找到。请确保 ~/feishu-toolkit/feishu_toolkit.py 存在。\n"
+            "feishu_toolkit.py 未找到。请确保 feishu-toolkit 与 music-toolkit 位于同一工作区目录，\n"
+            "或设置 FEISHU_TOOLKIT_PATH 指向 feishu-toolkit 所在目录。\n"
+            "兼容旧布局时，也可继续使用 ~/feishu-toolkit。\n"
             "飞书推送功能需要 feishu-toolkit 支持。"
         )
+
+
+# ─── Music Detail Scraper ────────────────────────────────────────────────────
+
+_SCRAPER_MOBILE_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+    "Version/16.6 Mobile/15E148 Safari/604.1"
+)
+
+_SCRAPER_PC_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+# endMs sentinel value Qishui uses for the last (credit) lyric line
+_SODA_LYRICS_SENTINEL_MS = 9_007_199_254_740_991
+
+
+def _soda_lyrics_to_lrc(lyrics_data: dict) -> str:
+    """将汽水音乐歌词 JSON 转换为 LRC 格式。
+
+    过滤掉 "作曲/作词" 元数据行和末尾的贡献者行（endMs 为 sentinel）。
+    """
+    if not lyrics_data:
+        return ""
+    sentences = lyrics_data.get("sentences", [])
+    lines = []
+    for s in sentences:
+        start_ms = int(s.get("startMs") or 0)
+        end_ms = int(s.get("endMs") or 0)
+        text = (s.get("text") or "").strip()
+        if not text:
+            continue
+        # Skip sentinel credit line at the very end
+        if end_ms >= _SODA_LYRICS_SENTINEL_MS:
+            continue
+        minutes = start_ms // 60000
+        seconds = (start_ms % 60000) / 1000
+        lines.append(f"[{minutes:02d}:{seconds:05.2f}]{text}")
+    return "\n".join(lines)
+
+
+def _soda_format_qualities(bit_rates: list) -> str:
+    """将 bit_rates 列表格式化为人类可读的音质字符串。
+
+    示例: "medium(68k) / higher(132k) / highest(260k) / lossless(684k)"
+    """
+    if not bit_rates:
+        return ""
+    # Sort by bitrate ascending
+    ordered = sorted(bit_rates, key=lambda b: int(b.get("br") or 0))
+    parts = []
+    for b in ordered:
+        quality = b.get("quality") or ""
+        br = int(b.get("br") or 0)
+        if br:
+            parts.append(f"{quality}({br // 1000}k)")
+        else:
+            parts.append(quality)
+    return " / ".join(parts)
+
+
+def _detect_platform_from_url(url: str) -> str:
+    """从 URL 检测音乐平台代码。"""
+    u = url.lower()
+    if "qishui.douyin.com" in u or "music.douyin.com" in u:
+        return "soda"
+    if "music.163.com" in u or "163cn.tv" in u:
+        return "netease"
+    if "y.qq.com" in u or "c6.y.qq.com" in u:
+        return "qq"
+    if "kugou.com" in u:
+        return "kugou"
+    if "kuwo.cn" in u:
+        return "kuwo"
+    if "bilibili.com" in u or "b23.tv" in u:
+        return "bilibili"
+    return "unknown"
+
+
+def _scrape_soda_detail(share_url: str, timeout: int = 15) -> SongDetailInfo:
+    """抓取汽水音乐（SODA/Qishui）歌曲详情。
+
+    支持:
+      - 短链: https://qishui.douyin.com/s/CODE/
+      - 完整: https://qishui.douyin.com/music/detail/MUSIC_ID
+      - 分享: https://music.douyin.com/qishui/share/track?track_id=...
+
+    数据来源: 页面内嵌 _ROUTER_DATA → loaderData → track_page → audioWithLyricsOption
+    """
+    import datetime
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _SCRAPER_MOBILE_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    })
+
+    # 1. Follow redirect → get page HTML and final URL
+    resp = session.get(share_url, timeout=timeout, allow_redirects=True)
+    resp.raise_for_status()
+    final_url = resp.url
+    page_html = resp.text
+
+    # 2. Extract _ROUTER_DATA = {...}; function ...
+    m = re.search(
+        r'_ROUTER_DATA\s*=\s*(\{.+?\});\s*(?:function|window)',
+        page_html,
+        re.DOTALL,
+    )
+    if not m:
+        raise ValueError(
+            f"无法从页面提取歌曲数据 (未找到 _ROUTER_DATA)\nURL: {final_url}"
+        )
+
+    router_data = json.loads(m.group(1))
+    track_page = router_data.get("loaderData", {}).get("track_page", {})
+    audio = track_page.get("audioWithLyricsOption", {})
+    track_info = audio.get("trackInfo", {})
+
+    if not audio:
+        raise ValueError(
+            f"_ROUTER_DATA 中未找到 audioWithLyricsOption\nURL: {final_url}"
+        )
+
+    # 3. Basic info
+    song_id = str(audio.get("track_id") or track_info.get("id") or "")
+    name = audio.get("trackName") or track_info.get("name") or ""
+
+    # Artist
+    artist = audio.get("artistName") or ""
+    if not artist:
+        artists_list = track_info.get("artists") or []
+        artist = "、".join(a.get("name", "") for a in artists_list if a.get("name"))
+
+    # Duration: audio.duration is float seconds; trackInfo.duration is ms
+    duration_float = float(audio.get("duration") or 0)
+    if not duration_float:
+        duration_float = float(track_info.get("duration") or 0) / 1000
+    duration = int(duration_float)
+
+    # 4. Cover — audio.coverURL is already a ready-to-use URL
+    cover = audio.get("coverURL") or ""
+    if not cover:
+        album_info_tmp = track_info.get("album", {})
+        url_cover = album_info_tmp.get("url_cover", {})
+        url_bases = url_cover.get("urls", [])
+        uri = url_cover.get("uri", "")
+        tpl = url_cover.get("template_prefix", "")
+        if url_bases and uri:
+            cover = f"{url_bases[0]}{uri}~{tpl}-image.webp"
+
+    # 5. Album
+    album_info = track_info.get("album", {})
+    album = album_info.get("name") or ""
+    album_id = str(audio.get("album_id") or album_info.get("id") or "")
+
+    # 6. Engagement stats
+    stats = track_info.get("stats", {})
+    favorites = int(stats.get("count_collected") or 0)
+    comments = int(
+        stats.get("count_comment")
+        or audio.get("commentsStruct", {}).get("count")
+        or 0
+    )
+    shares = int(stats.get("count_shared") or 0)
+    plays = int(stats.get("count_played") or stats.get("count_view") or 0)
+
+    # 7. Publish date (prefer album release_date, fall back to track create_time)
+    create_time = int(album_info.get("release_date") or audio.get("create_time") or 0)
+    publish_date = ""
+    if create_time:
+        publish_date = datetime.datetime.fromtimestamp(create_time).strftime("%Y-%m-%d")
+
+    # 8. Audio CDN URL (temporary, ~24h TTL)
+    audio_url = audio.get("url") or ""
+
+    # 9. Lyrics → LRC format
+    lyrics_lrc = _soda_lyrics_to_lrc(audio.get("lyrics") or {})
+
+    # 10. Genre & language
+    genre = audio.get("genre_tag") or ""
+    lang_codes = track_info.get("lang_codes") or []
+    language = ", ".join(lang_codes)
+
+    # 11. Composers & lyricists
+    smt = track_info.get("song_maker_team") or {}
+    composers = ", ".join(c.get("name", "") for c in smt.get("composers", []) if c.get("name"))
+    lyricists = ", ".join(l.get("name", "") for l in smt.get("lyricists", []) if l.get("name"))
+
+    # 12. Quality options
+    bit_rates = track_info.get("bit_rates") or []
+    qualities = _soda_format_qualities(bit_rates)
+
+    # 13. Extra — raw data for further processing
+    extra = {
+        "tags": [
+            t.get("first_level_tag", {}).get("tag_name", "")
+            for t in (track_info.get("tags") or [])
+            if t.get("first_level_tag")
+        ],
+        "bit_rates": [
+            {"quality": b.get("quality"), "kbps": (b.get("br") or 0) // 1000,
+             "size_bytes": b.get("size")}
+            for b in bit_rates
+        ],
+        "vid": audio.get("vid") or "",
+        "update_time": audio.get("update_time") or "",
+        "group_playable_level": audio.get("group_playable_level") or "",
+        "group_download_level": audio.get("group_download_level") or "",
+        "sharable_platforms": track_info.get("sharable_platforms") or [],
+        "preview_duration_ms": (track_info.get("preview") or {}).get("duration") or 0,
+    }
+
+    return SongDetailInfo(
+        song_id=song_id,
+        platform="soda",
+        name=name,
+        artist=artist,
+        duration=duration,
+        cover=cover,
+        album=album,
+        album_id=album_id,
+        publish_date=publish_date,
+        favorites=favorites,
+        comments=comments,
+        shares=shares,
+        plays=plays,
+        audio_url=audio_url,
+        lyrics_lrc=lyrics_lrc,
+        genre=genre,
+        language=language,
+        composers=composers,
+        lyricists=lyricists,
+        qualities=qualities,
+        share_url=share_url,
+        resolved_url=final_url,
+        extra=extra,
+    )
+
+def _scrape_soda_playlist_detail(share_url: str, timeout: int = 15) -> "PlaylistDetailInfo":
+    """抓取汽水音乐歌单详情（数据监控，不含歌曲下载）。
+
+    支持:
+      - 短链: https://qishui.douyin.com/s/CODE/
+      - 完整: https://music.douyin.com/qishui/share/playlist?playlist_id=...
+
+    数据来源: 页面内嵌 _ROUTER_DATA → loaderData → playlist_page
+    """
+    import datetime
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _SCRAPER_MOBILE_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    })
+
+    resp = session.get(share_url, timeout=timeout, allow_redirects=True)
+    resp.raise_for_status()
+    final_url = resp.url
+    page_html = resp.text
+
+    m = re.search(
+        r'_ROUTER_DATA\s*=\s*(\{.+?\});\s*(?:function|window)',
+        page_html,
+        re.DOTALL,
+    )
+    if not m:
+        raise ValueError(
+            f"无法从页面提取歌单数据 (未找到 _ROUTER_DATA)\nURL: {final_url}"
+        )
+
+    router_data = json.loads(m.group(1))
+    playlist_page = router_data.get("loaderData", {}).get("playlist_page", {})
+
+    if not playlist_page:
+        raise ValueError(
+            f"_ROUTER_DATA 中未找到 playlist_page\nURL: {final_url}\n"
+            "请确认这是歌单分享链接（而非单曲链接）"
+        )
+
+    playlist_info = playlist_page.get("playlistInfo", {})
+    medias = playlist_page.get("medias", [])
+
+    # ── 歌单基本信息 ──
+    playlist_id = str(playlist_info.get("id") or "")
+    title = playlist_info.get("title") or ""
+
+    owner = playlist_info.get("owner") or {}
+    creator = owner.get("nickname") or owner.get("name") or ""
+
+    # 封面
+    cover = ""
+    cover_info = playlist_info.get("cover_url") or {}
+    cover_urls = cover_info.get("urls") or []
+    cover_uri = cover_info.get("uri") or ""
+    cover_tpl = cover_info.get("template_prefix") or ""
+    if cover_urls and cover_uri:
+        cover = f"{cover_urls[0]}{cover_uri}~{cover_tpl}-image.webp"
+
+    track_count = int(playlist_info.get("count_tracks") or len(medias))
+    description = playlist_info.get("description") or ""
+
+    def _ts_to_date(ts) -> str:
+        if not ts:
+            return ""
+        try:
+            return datetime.datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+
+    create_time = _ts_to_date(playlist_info.get("create_time"))
+    update_time = _ts_to_date(playlist_info.get("update_time"))
+
+    # ── 提取曲目 ──
+    tracks = []
+    seen_ids: set = set()
+    for media in medias:
+        entity = media.get("entity") or {}
+        track = entity.get("track") or {}
+        if not track.get("id"):
+            continue
+        tid = str(track["id"])
+        if tid in seen_ids:
+            continue
+        seen_ids.add(tid)
+        tracks.append(_soda_track_dict_to_detail(track, share_url=""))
+
+    extra = {
+        "play_count": int(playlist_info.get("play_count") or 0),
+        "collect_count": int(playlist_info.get("collect_count") or 0),
+        "share_count": int(playlist_info.get("share_count") or 0),
+    }
+
+    return PlaylistDetailInfo(
+        playlist_id=playlist_id,
+        platform="soda",
+        title=title,
+        creator=creator,
+        cover=cover,
+        track_count=track_count,
+        create_time=create_time,
+        update_time=update_time,
+        description=description,
+        tracks=tuple(tracks),
+        share_url=share_url,
+        resolved_url=final_url,
+        extra=extra,
+    )
+
+
+def _scrape_netease_detail(share_url: str, timeout: int = 15) -> SongDetailInfo:
+    """抓取网易云音乐歌曲详情。
+
+    支持:
+      - https://music.163.com/#/song?id=xxx
+      - https://music.163.com/song?id=xxx
+      - https://163.cn/xxx (短链)
+    """
+    import datetime
+    from urllib.parse import urlparse, parse_qs
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _SCRAPER_PC_UA,
+        "Referer": "https://music.163.com/",
+    })
+
+    # Follow redirect
+    resp = session.get(share_url, timeout=timeout, allow_redirects=True)
+    final_url = resp.url
+
+    # Extract song_id — handle hash-based URL (#/song?id=xxx)
+    song_id = ""
+    parsed = urlparse(final_url)
+
+    fragment = parsed.fragment
+    if fragment:
+        # fragment: /song?id=xxx
+        fqs = parse_qs(fragment.lstrip("/song"))
+        song_id = (fqs.get("?id") or fqs.get("id") or [""])[0]
+
+    if not song_id:
+        qs = parse_qs(parsed.query)
+        song_id = (qs.get("id") or [""])[0]
+
+    if not song_id:
+        m = re.search(r'/song(?:Detail)?[/=](\d+)', final_url)
+        if m:
+            song_id = m.group(1)
+
+    if not song_id:
+        raise ValueError(f"无法从 URL 提取歌曲 ID: {final_url}")
+
+    # Netease API
+    api_url = f"https://music.163.com/api/song/detail/?id={song_id}&ids=[{song_id}]"
+    api_resp = session.get(api_url, timeout=10)
+    data = api_resp.json()
+    songs = data.get("songs", [])
+    if not songs:
+        raise ValueError(f"网易云 API 未返回数据 (id={song_id})")
+
+    track = songs[0]
+    name = track.get("name") or ""
+
+    artists = track.get("artists") or []
+    artist = "、".join(a.get("name", "") for a in artists if a.get("name"))
+
+    duration = int((track.get("duration") or 0) // 1000)  # ms → s
+
+    album_info = track.get("album") or {}
+    album = album_info.get("name") or ""
+    cover = album_info.get("picUrl") or ""
+
+    publish_date = ""
+    publish_time = album_info.get("publishTime")
+    if publish_time:
+        publish_date = datetime.datetime.fromtimestamp(publish_time / 1000).strftime("%Y-%m-%d")
+
+    return SongDetailInfo(
+        song_id=song_id,
+        platform="netease",
+        name=name,
+        artist=artist,
+        duration=duration,
+        cover=cover,
+        album=album,
+        album_id=str(album_info.get("id") or ""),
+        publish_date=publish_date,
+        favorites=0,
+        comments=0,
+        shares=0,
+        plays=0,
+        audio_url="",
+        lyrics_lrc="",
+        genre="",
+        language="",
+        composers="",
+        lyricists="",
+        qualities="",
+        share_url=share_url,
+        resolved_url=final_url,
+        extra=track,
+    )
+
+
+def _scrape_qq_detail(share_url: str, timeout: int = 15) -> SongDetailInfo:
+    """抓取 QQ 音乐歌曲详情。
+
+    支持:
+      - https://y.qq.com/n/ryqq/songDetail/SONGMID
+      - https://c6.y.qq.com/...
+    """
+    from urllib.parse import urlparse, parse_qs, quote
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _SCRAPER_PC_UA,
+        "Referer": "https://y.qq.com/",
+    })
+
+    # Follow redirect
+    resp = session.get(share_url, timeout=timeout, allow_redirects=True)
+    final_url = resp.url
+
+    # Extract songmid
+    songmid = ""
+    m = re.search(r'/songDetail/([A-Za-z0-9]+)', final_url)
+    if m:
+        songmid = m.group(1)
+    if not songmid:
+        qs = parse_qs(urlparse(final_url).query)
+        songmid = (qs.get("songmid") or qs.get("mid") or [""])[0]
+    if not songmid:
+        raise ValueError(f"无法从 URL 提取 songmid: {final_url}")
+
+    # QQ Music API
+    req_data = {
+        "comm": {"ct": 24, "cv": 0},
+        "detail": {
+            "module": "music.pf_song_detail_svr",
+            "method": "get_song_detail_yqq",
+            "param": {"song_mid": songmid},
+        },
+    }
+    api_url = (
+        "https://u.y.qq.com/cgi-bin/musics.fcg?format=json&data="
+        + quote(json.dumps(req_data, separators=(",", ":")))
+    )
+    track: dict = {}
+    try:
+        api_resp = session.get(api_url, timeout=10)
+        data = api_resp.json()
+        track = (
+            data.get("detail", {})
+            .get("data", {})
+            .get("track_info", {})
+        )
+    except Exception:
+        pass
+
+    name = track.get("name") or ""
+    singers = track.get("singer") or []
+    artist = "、".join(s.get("name", "") for s in singers if s.get("name"))
+    duration = int(track.get("interval") or 0)
+
+    album_info = track.get("album") or {}
+    album = album_info.get("name") or ""
+    pmid = album_info.get("pmid") or ""
+    cover = f"https://y.gtimg.cn/music/photo_new/T002R800x800M000{pmid}.jpg" if pmid else ""
+
+    return SongDetailInfo(
+        song_id=songmid,
+        platform="qq",
+        name=name,
+        artist=artist,
+        duration=duration,
+        cover=cover,
+        album=album,
+        album_id=str(album_info.get("mid") or album_info.get("id") or ""),
+        publish_date="",
+        favorites=0,
+        comments=0,
+        shares=0,
+        plays=0,
+        audio_url="",
+        lyrics_lrc="",
+        genre="",
+        language="",
+        composers="",
+        lyricists="",
+        qualities="",
+        share_url=share_url,
+        resolved_url=final_url,
+        extra=track,
+    )
+
+
+def _soda_track_dict_to_detail(track: dict, share_url: str = "") -> "SongDetailInfo":
+    """将汽水音乐 trackInfo dict（来自 artistTracks/relatedTracks 等）转为 SongDetailInfo。
+
+    这类 track dict 已包含 id/name/artists/duration/album/stats，
+    可直接使用无需额外网络请求。但没有 audio_url 和 lyrics，需要单独抓取。
+    """
+    import datetime
+
+    song_id = str(track.get("id") or "")
+    name = track.get("name") or ""
+
+    artists_list = track.get("artists") or []
+    artist = "\u3001".join(a.get("name", "") for a in artists_list if a.get("name"))
+
+    duration = int((track.get("duration") or 0) / 1000)  # ms → s
+
+    album_info = track.get("album") or {}
+    album = album_info.get("name") or ""
+    album_id = str(album_info.get("id") or "")
+
+    # Cover from album url_cover
+    cover = ""
+    url_cover = album_info.get("url_cover") or {}
+    url_bases = url_cover.get("urls") or []
+    uri = url_cover.get("uri") or ""
+    tpl = url_cover.get("template_prefix") or ""
+    if url_bases and uri:
+        cover = f"{url_bases[0]}{uri}~{tpl}-image.webp"
+
+    # Stats
+    stats = track.get("stats") or {}
+    favorites = int(stats.get("count_collected") or 0)
+    comments = int(stats.get("count_comment") or 0)
+    shares = int(stats.get("count_shared") or 0)
+    plays = int(stats.get("count_played") or stats.get("count_view") or 0)
+
+    # Publish date
+    release_ts = int(album_info.get("release_date") or 0)
+    publish_date = ""
+    if release_ts:
+        publish_date = datetime.datetime.fromtimestamp(release_ts).strftime("%Y-%m-%d")
+
+    # Composer/lyricist
+    smt = track.get("song_maker_team") or {}
+    composers = ", ".join(c.get("name", "") for c in smt.get("composers", []) if c.get("name"))
+    lyricists = ", ".join(l.get("name", "") for l in smt.get("lyricists", []) if l.get("name"))
+
+    bit_rates = track.get("bit_rates") or []
+    qualities = _soda_format_qualities(bit_rates)
+
+    resolved_url = (
+        f"https://music.douyin.com/qishui/share/track?track_id={song_id}"
+        if song_id else ""
+    )
+
+    return SongDetailInfo(
+        song_id=song_id,
+        platform="soda",
+        name=name,
+        artist=artist,
+        duration=duration,
+        cover=cover,
+        album=album,
+        album_id=album_id,
+        publish_date=publish_date,
+        favorites=favorites,
+        comments=comments,
+        shares=shares,
+        plays=plays,
+        audio_url="",
+        lyrics_lrc="",
+        genre="",
+        language="",
+        composers=composers,
+        lyricists=lyricists,
+        qualities=qualities,
+        share_url=share_url,
+        resolved_url=resolved_url,
+        extra={"bit_rates": [{"quality": b.get("quality"), "kbps": (b.get("br") or 0) // 1000} for b in bit_rates]},
+    )
+
+
+def get_soda_related_tracks(share_url: str, timeout: int = 15) -> list:
+    """从单曲分享页中提取同艺人曲目和相关曲目（无需额外请求，已含统计数据）。
+
+    返回 list[SongDetailInfo]，每条包含完整统计数据但无 audio_url/lyrics。
+    """
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _SCRAPER_MOBILE_UA,
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    })
+
+    resp = session.get(share_url, timeout=timeout, allow_redirects=True)
+    resp.raise_for_status()
+    page_html = resp.text
+
+    m = re.search(
+        r'_ROUTER_DATA\s*=\s*(\{.+?\});\s*(?:function|window)',
+        page_html,
+        re.DOTALL,
+    )
+    if not m:
+        return []
+
+    router_data = json.loads(m.group(1))
+    audio = (
+        router_data.get("loaderData", {})
+        .get("track_page", {})
+        .get("audioWithLyricsOption", {})
+    )
+
+    results = []
+    seen_ids: set = set()
+
+    def _add_tracks(track_list: list) -> None:
+        for item in track_list:
+            track = item.get("track") or item  # artistTracks wrap in {track: {...}}
+            tid = str(track.get("id") or "")
+            if tid and tid not in seen_ids:
+                seen_ids.add(tid)
+                results.append(_soda_track_dict_to_detail(track))
+
+    _add_tracks(audio.get("artistTracks") or [])
+    _add_tracks(audio.get("relatedTracks") or [])
+
+    return results
+
+
+def get_song_detail_from_url(url: str, timeout: int = 15) -> SongDetailInfo:
+    """从分享链接抓取歌曲详情（收藏、评论、分享等）。
+
+    支持平台:
+      - 汽水音乐 (qishui.douyin.com) — 含完整统计数据
+      - 网易云音乐 (music.163.com)
+      - QQ 音乐 (y.qq.com)
+
+    Args:
+        url: 分享链接（支持短链和完整 URL）
+        timeout: 请求超时秒数
+
+    Returns:
+        SongDetailInfo 包含歌曲详情和统计信息
+
+    Raises:
+        ValueError: URL 无法解析或平台不支持
+        MusicClientError: 网络请求失败
+    """
+    platform = _detect_platform_from_url(url)
+    try:
+        if platform == "soda":
+            return _scrape_soda_detail(url, timeout=timeout)
+        elif platform == "netease":
+            return _scrape_netease_detail(url, timeout=timeout)
+        elif platform == "qq":
+            return _scrape_qq_detail(url, timeout=timeout)
+        else:
+            raise ValueError(
+                f"不支持的平台 URL: {url}\n"
+                "支持: 汽水音乐 (qishui.douyin.com)、"
+                "网易云 (music.163.com)、QQ音乐 (y.qq.com)"
+            )
+    except requests.ConnectionError as e:
+        raise MusicClientError(f"网络连接失败: {e}")
+    except requests.Timeout:
+        raise MusicClientError(
+            f"请求超时 ({timeout}s)，可能遭遇限速，请稍后重试或用 --timeout 加长等待"
+        )
+    except requests.HTTPError as e:
+        raise MusicClientError(f"HTTP 错误: {e}")
+
+
+def get_playlist_detail_from_url(url: str, timeout: int = 15) -> PlaylistDetailInfo:
+    """从歌单分享链接抓取歌单详情（数据监控，不含歌曲下载）。
+
+    支持平台:
+      - 汽水音乐 (qishui.douyin.com) — 含完整曲目统计数据
+
+    Args:
+        url: 歌单分享链接（支持短链和完整 URL）
+        timeout: 请求超时秒数
+
+    Returns:
+        PlaylistDetailInfo 包含歌单详情和曲目列表
+
+    Raises:
+        ValueError: URL 无法解析或平台不支持
+        MusicClientError: 网络请求失败
+    """
+    platform = _detect_platform_from_url(url)
+    try:
+        if platform == "soda":
+            return _scrape_soda_playlist_detail(url, timeout=timeout)
+        else:
+            raise ValueError(
+                f"歌单详情暂不支持该平台 URL: {url}\n"
+                "目前支持: 汽水音乐 (qishui.douyin.com)"
+            )
+    except requests.ConnectionError as e:
+        raise MusicClientError(f"网络连接失败: {e}")
+    except requests.Timeout:
+        raise MusicClientError(
+            f"请求超时 ({timeout}s)，可能遭遇限速，请稍后重试或用 --timeout 加长等待"
+        )
+    except requests.HTTPError as e:
+        raise MusicClientError(f"HTTP 错误: {e}")
 
 
 # ─── Formatting Helpers ──────────────────────────────────────────────────────
@@ -1622,6 +2552,120 @@ def _print_json(data):
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def _print_playlist_detail(playlist: "PlaylistDetailInfo", show_lyrics: bool = False) -> None:
+    """格式化打印 PlaylistDetailInfo 的全部字段。"""
+    sep = "─" * 60
+
+    print(f"\n{sep}")
+    print(f"📋  {playlist.title}")
+    print(f"{sep}")
+    print(f"   创建者:  {playlist.creator}")
+    print(f"   歌曲数:  {playlist.track_count}")
+    print(f"   平台:    {playlist.source_name} [{playlist.platform}]")
+    print(f"   歌单ID:  {playlist.playlist_id}")
+    if playlist.create_time:
+        print(f"   创建:    {playlist.create_time}")
+    if playlist.update_time:
+        print(f"   更新:    {playlist.update_time}")
+    if playlist.description:
+        desc = playlist.description[:100] + ("..." if len(playlist.description) > 100 else "")
+        print(f"   简介:    {desc}")
+    if playlist.extra.get("play_count"):
+        print(f"   播放:    {playlist.extra['play_count']:,}")
+    if playlist.extra.get("collect_count"):
+        print(f"   收藏:    {playlist.extra['collect_count']:,}")
+    if playlist.extra.get("share_count"):
+        print(f"   分享:    {playlist.extra['share_count']:,}")
+    if playlist.cover:
+        print(f"   封面:    {playlist.cover}")
+
+    if playlist.tracks:
+        print(f"\n{'─'*60}")
+        print(f"  {'#':<4} {'歌名':<24} {'歌手':<12} {'时长':<6} {'收藏':>8} {'评论':>7} {'分享':>7}")
+        print(f"  {'─'*4} {'─'*24} {'─'*12} {'─'*6} {'─'*8} {'─'*7} {'─'*7}")
+        for i, t in enumerate(playlist.tracks, 1):
+            print(
+                f"  {i:<4} {t.name[:22]:<24} {t.artist[:10]:<12} {t.duration_str:<6}"
+                f" {t.favorites:>8,} {t.comments:>7,} {t.shares:>7,}"
+            )
+            if show_lyrics and t.lyrics_lrc:
+                preview = t.lyrics_text.splitlines()[:2]
+                for line in preview:
+                    print(f"       ♪ {line}")
+
+    print()
+
+
+def _print_song_detail(detail: "SongDetailInfo", show_lyrics: bool = False) -> None:
+    """格式化打印 SongDetailInfo 的全部字段。"""
+    platform_name = PLATFORMS.get(detail.platform, detail.platform)
+    sep = "─" * 52
+
+    print(f"\n{sep}")
+    print(f"🎵  {detail.name}")
+    print(f"{sep}")
+
+    # 基础信息
+    print(f"   歌手:    {detail.artist}")
+    if detail.album:
+        print(f"   专辑:    {detail.album}" + (f"  (ID: {detail.album_id})" if detail.album_id else ""))
+    print(f"   时长:    {detail.duration_str}  ({detail.duration}s)")
+    print(f"   平台:    {platform_name} [{detail.platform}]")
+    print(f"   歌曲ID:  {detail.song_id}")
+    if detail.publish_date:
+        print(f"   发布:    {detail.publish_date}")
+    if detail.genre:
+        print(f"   曲风:    {detail.genre}")
+    if detail.language:
+        print(f"   语言:    {detail.language}")
+    if detail.composers:
+        print(f"   作曲:    {detail.composers}")
+    if detail.lyricists:
+        print(f"   作词:    {detail.lyricists}")
+    if detail.qualities:
+        print(f"   音质:    {detail.qualities}")
+
+    # 封面
+    if detail.cover:
+        print(f"   封面:    {detail.cover}")
+
+    # 音频直链
+    if detail.audio_url:
+        url_display = detail.audio_url[:80] + "..." if len(detail.audio_url) > 80 else detail.audio_url
+        print(f"   音频:    {url_display}")
+        print(f"            (CDN 直链，临时有效约 24h)")
+
+    # 互动统计
+    print(f"\n📊 互动统计:")
+    print(f"   收藏:    {detail.favorites:,}")
+    print(f"   评论:    {detail.comments:,}")
+    print(f"   分享:    {detail.shares:,}")
+    if detail.plays:
+        print(f"   播放:    {detail.plays:,}")
+
+    # 链接
+    if detail.resolved_url and detail.resolved_url != detail.share_url:
+        print(f"\n🔗 解析链接:")
+        print(f"   {detail.resolved_url}")
+
+    # 歌词
+    if detail.lyrics_lrc:
+        if show_lyrics:
+            print(f"\n📝 歌词 (LRC):\n")
+            for line in detail.lyrics_lrc.splitlines():
+                print(f"   {line}")
+        else:
+            lines = detail.lyrics_text.splitlines()
+            preview = "\n".join(f"   {l}" for l in lines[:4])
+            print(f"\n📝 歌词预览:\n{preview}")
+            if len(lines) > 4:
+                print(f"   ... 共 {len(lines)} 行  (--lyrics 查看完整歌词)")
+
+    print(f"\n💡 下载: python music_toolkit.py parse-url {detail.share_url} --download")
+
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="music_toolkit",
@@ -1635,6 +2679,9 @@ def main():
   %(prog)s detail 0042rlGx2WHBrG qq          # 歌曲详情
   %(prog)s lyrics 0042rlGx2WHBrG qq          # 获取歌词
   %(prog)s download 0042rlGx2WHBrG qq        # 下载歌曲
+  %(prog)s music-detail "https://qishui.douyin.com/s/CODE/"  # 分享链接详情
+  %(prog)s playlist-detail "https://qishui.douyin.com/s/CODE/"  # 歌单详情（数据监控）
+  %(prog)s playlist-detail "..." --lyrics     # 同时下载歌词
   %(prog)s switch-source --name 晴天 --artist 周杰伦  # 换源
   %(prog)s platforms                          # 列出平台
   %(prog)s push-song 0042rlGx2WHBrG qq       # 推送飞书
@@ -1717,6 +2764,24 @@ def main():
     p.add_argument("--chat-id", dest="send_chat_id", metavar="CHAT_ID",
                    help="目标飞书群 ID (不指定则用 FEISHU_DEFAULT_CHAT_ID)")
 
+    # ── music-detail ──────────────────────────────────────────────────────────
+    p = sub.add_parser("music-detail", help="从分享链接抓取歌曲详情（收藏/评论/分享/封面等）")
+    p.add_argument("url", help="歌曲分享链接（汽水/网易云/QQ音乐等）")
+    p.add_argument("--json", action="store_true", dest="as_json", help="输出 JSON")
+    p.add_argument("--lyrics", action="store_true", help="同时输出完整歌词")
+    p.add_argument("--related", action="store_true", help="同时列出同艺人/相关曲目（仅汽水，无需额外请求）")
+    p.add_argument("--timeout", type=int, default=15, help="请求超时秒数 (默认 15)")
+
+    # ── music-detail-batch ────────────────────────────────────────────────
+    p = sub.add_parser("music-detail-batch", help="批量抓取多条歌曲详情（支持多 URL 或歌单文件）")
+    p.add_argument("urls", nargs="*", help="歌曲分享链接（可多个，空格分隔）")
+    p.add_argument("--file", dest="url_file", metavar="FILE",
+                   help="从文件读取 URL（每行一个）")
+    p.add_argument("--delay", type=float, default=2.0,
+                   help="请求间隔秒数，避免限速 (默认 2.0)")
+    p.add_argument("--json", action="store_true", dest="as_json", help="输出 JSON 数组")
+    p.add_argument("--timeout", type=int, default=15, help="单条请求超时秒数 (默认 15)")
+
     # ── parse-url ──────────────────────────────────────────────────────────
     p = sub.add_parser("parse-url", help="解析音乐分享链接 → 详情 + 歌词 + 下载")
     p.add_argument("url", help="音乐分享链接 (网易云/QQ音乐/酷狗 等)")
@@ -1724,6 +2789,18 @@ def main():
     p.add_argument("--dir", dest="save_dir", help="下载保存目录")
     p.add_argument("--webhook", help="推送到飞书 webhook URL")
     p.add_argument("--json", action="store_true", dest="as_json", help="输出 JSON")
+
+    # ── playlist-detail ────────────────────────────────────────────────────
+    p = sub.add_parser("playlist-detail", help="从歌单分享链接抓取歌单详情（数据监控，不含歌曲下载）")
+    p.add_argument("url", help="歌单分享链接（汽水音乐等）")
+    p.add_argument("--json", action="store_true", dest="as_json", help="输出 JSON")
+    p.add_argument("--lyrics", action="store_true",
+                   help="同时下载每首歌的歌词文件 (.lrc)，保存到 --dir 目录")
+    p.add_argument("--dir", dest="save_dir", default="./downloads",
+                   help="歌词保存目录 (默认 ./downloads，--lyrics 时生效)")
+    p.add_argument("--delay", type=float, default=1.5,
+                   help="歌词请求间隔秒数 (默认 1.5)")
+    p.add_argument("--timeout", type=int, default=15, help="请求超时秒数 (默认 15)")
 
     # ── platforms ──────────────────────────────────────────────────────────
     sub.add_parser("platforms", help="列出支持的平台")
@@ -1745,6 +2822,13 @@ def main():
     p.add_argument("playlist_id", help="歌单 ID")
     p.add_argument("source", help="音源平台")
     p.add_argument("--chat-id", help="飞书群 ID")
+
+    # ── push-playlist-detail ───────────────────────────────────────────────
+    p = sub.add_parser("push-playlist-detail", help="抓取歌单详情（数据监控）并推送到飞书群")
+    p.add_argument("url", help="歌单分享链接（汽水音乐等）")
+    p.add_argument("--chat-id", help="飞书群 ID（不指定则用 FEISHU_DEFAULT_CHAT_ID）")
+    p.add_argument("--max-tracks", type=int, default=0, help="卡片最多显示曲目数（默认 0 = 全部显示）")
+    p.add_argument("--timeout", type=int, default=15, help="请求超时秒数（默认 15）")
 
     # ── push-webhook ───────────────────────────────────────────────────────
     p = sub.add_parser("push-webhook", help="搜索歌曲并推送到飞书 webhook")
@@ -2020,6 +3104,78 @@ def _run_command(args):
         except Exception as e:
             print(f"❌ 飞书发送失败: {e}", file=sys.stderr)
 
+    elif args.command == "music-detail":
+        detail = get_song_detail_from_url(args.url, timeout=args.timeout)
+        if args.as_json:
+            _print_json(detail.to_dict())
+        else:
+            _print_song_detail(detail, show_lyrics=args.lyrics)
+            if args.related and detail.platform == "soda":
+                print(f"\n{'─' * 52}")
+                print("🎵 同艺人 / 相关曲目 (来自页面嵌入数据，无额外请求)\n")
+                related = get_soda_related_tracks(args.url, timeout=args.timeout)
+                for i, r in enumerate(related, 1):
+                    print(
+                        f"  {i:>2}. {r.name} — {r.artist}"
+                        f"  ({r.duration_str})  "
+                        f"收藏:{r.favorites:,}  评论:{r.comments:,}  分享:{r.shares:,}"
+                    )
+                    print(f"       ID: {r.song_id}  专辑: {r.album}  发布: {r.publish_date}")
+
+    elif args.command == "music-detail-batch":
+        import time as _time
+
+        # Collect URLs
+        urls: list[str] = list(args.urls or [])
+        if args.url_file:
+            try:
+                with open(args.url_file, encoding="utf-8") as uf:
+                    for line in uf:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            urls.append(line)
+            except FileNotFoundError:
+                print(f"❌ 文件不存在: {args.url_file}", file=sys.stderr)
+                return
+
+        if not urls:
+            print("❌ 请提供至少一个 URL 或 --file 参数", file=sys.stderr)
+            return
+
+        print(f"\n📋 批量抓取 {len(urls)} 首歌曲详情\n")
+        results = []
+        for idx, url in enumerate(urls, 1):
+            prefix = f"[{idx}/{len(urls)}]"
+            print(f"{prefix} 抓取: {url[:60]}...")
+            try:
+                d = get_song_detail_from_url(url, timeout=args.timeout)
+                results.append(d)
+                print(
+                    f"  ✅ {d.name} — {d.artist}"
+                    f"  收藏:{d.favorites:,}  评论:{d.comments:,}  分享:{d.shares:,}"
+                )
+            except Exception as e:
+                print(f"  ❌ 失败: {e}")
+                results.append(None)
+
+            if idx < len(urls):
+                _time.sleep(args.delay)
+
+        if args.as_json:
+            _print_json([r.to_dict() if r else None for r in results])
+        else:
+            valid = [r for r in results if r]
+            print(f"\n{'─' * 52}")
+            print(f"📊 完成: {len(valid)}/{len(urls)} 成功\n")
+            if valid:
+                print(f"  {'#':<4} {'歌名':<22} {'歌手':<12} {'时长':<6} {'收藏':>8} {'评论':>7} {'分享':>7}")
+                print(f"  {'─'*4} {'─'*22} {'─'*12} {'─'*6} {'─'*8} {'─'*7} {'─'*7}")
+                for i, r in enumerate(valid, 1):
+                    print(
+                        f"  {i:<4} {r.name[:20]:<22} {r.artist[:10]:<12} {r.duration_str:<6}"
+                        f" {r.favorites:>8,} {r.comments:>7,} {r.shares:>7,}"
+                    )
+
     elif args.command == "parse-url":
         # 把 URL 作为搜索关键词，go-music-dl 会自动解析
         songs = client.search_songs(args.url)
@@ -2111,6 +3267,46 @@ def _run_command(args):
             result = push_to_webhook(args.webhook, enriched)
             print(f"\n📨 已推送到飞书 (卡片 + 歌词)")
 
+    elif args.command == "playlist-detail":
+        import time as _time
+
+        playlist = get_playlist_detail_from_url(args.url, timeout=args.timeout)
+
+        if args.as_json:
+            _print_json(playlist.to_dict())
+        else:
+            _print_playlist_detail(playlist)
+
+        # 下载歌词（每首单独请求，尽力而为）
+        if args.lyrics and playlist.tracks:
+            print(f"\n📝 正在下载 {len(playlist.tracks)} 首歌曲歌词 ...")
+            save_dir = Path(args.save_dir)
+            save_dir.mkdir(parents=True, exist_ok=True)
+            ok = 0
+            for idx, track in enumerate(playlist.tracks, 1):
+                if not track.song_id:
+                    continue
+                try:
+                    # Construct a share URL to fetch LRC from the go-music-dl backend
+                    client = MusicClient()
+                    lrc_content = client.get_lyrics(track.song_id, "soda")
+                    if lrc_content:
+                        filename = _sanitize_filename(
+                            _build_filename(track.name, track.artist, "lrc")
+                        )
+                        lrc_path = save_dir / filename
+                        lrc_path.write_text(lrc_content, encoding="utf-8")
+                        _save_txt_lyrics(lrc_path)
+                        ok += 1
+                        print(f"  [{idx:>2}/{len(playlist.tracks)}] ✅ {track.name}")
+                    else:
+                        print(f"  [{idx:>2}/{len(playlist.tracks)}] ⚠️  {track.name} (无歌词)")
+                except Exception as e:
+                    print(f"  [{idx:>2}/{len(playlist.tracks)}] ❌ {track.name}: {e}")
+                if idx < len(playlist.tracks):
+                    _time.sleep(args.delay)
+            print(f"\n📊 歌词下载完成: {ok}/{len(playlist.tracks)} 首  → {save_dir}/")
+
     elif args.command == "platforms":
         print("\n🎵 支持的平台:\n")
         for code, name in PLATFORMS.items():
@@ -2174,6 +3370,19 @@ def _run_command(args):
         pusher = FeishuPusher()
         pusher.push_playlist_card(playlist, songs=songs, chat_id=args.chat_id)
         print(f"✅ 歌单 ({len(songs)} 首) 已推送到飞书")
+
+    elif args.command == "push-playlist-detail":
+        print(f"📋 抓取歌单数据: {args.url[:60]}...")
+        playlist = get_playlist_detail_from_url(args.url, timeout=args.timeout)
+        print(f"   {playlist.title} — {len(playlist.tracks)} 首")
+
+        pusher = FeishuPusher()
+        pusher.push_playlist_detail_card(
+            playlist,
+            chat_id=args.chat_id,
+            max_tracks=args.max_tracks,
+        )
+        print(f"✅ 歌单卡片已推送到飞书群")
 
     elif args.command == "push-webhook":
         songs = client.search_songs(args.keyword, sources=args.sources)
