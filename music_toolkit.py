@@ -2146,8 +2146,8 @@ def _scrape_netease_playlist_detail(share_url: str, timeout: int = 15) -> "Playl
       - https://music.163.com/playlist?id=xxx
       - https://music.163.com/#/playlist?id=xxx
 
-    数据来源: music.163.com/api/v6/playlist/detail + song/detail
-    注意: 网易云公开 API 不提供单曲收藏/评论/分享数，这些字段固定为 0。
+    数据来源: music.163.com/api/v6/playlist/detail + song/detail + batch comment API
+    注意: 网易云公开 API 不提供单曲收藏/分享数（固定 0），但评论数可通过 batch API 获取。
     """
     import datetime
     from urllib.parse import urlparse, parse_qs
@@ -2233,7 +2233,7 @@ def _scrape_netease_playlist_detail(share_url: str, timeout: int = 15) -> "Playl
             for s in detail_resp.json().get("songs", []):
                 tracks_map[str(s.get("id"))] = s
 
-    def _netease_track_to_detail(t: dict) -> "SongDetailInfo":
+    def _netease_track_to_detail(t: dict, comments: int = 0) -> "SongDetailInfo":
         song_id = str(t.get("id") or "")
         name = t.get("name") or ""
         # v6 API uses 'ar', older uses 'artists'
@@ -2261,7 +2261,7 @@ def _scrape_netease_playlist_detail(share_url: str, timeout: int = 15) -> "Playl
             album_id=album_id,
             publish_date=publish_date,
             favorites=0,
-            comments=0,
+            comments=comments,
             shares=0,
             plays=0,
             audio_url="",
@@ -2276,11 +2276,35 @@ def _scrape_netease_playlist_detail(share_url: str, timeout: int = 15) -> "Playl
             extra={},
         )
 
+    # 批量获取评论数（/api/batch 一次请求可查多首）
+    comment_counts: dict = {}
+    all_ids = list(tracks_map.keys())
+    # batch API 每次最多约 100 个子请求
+    for i in range(0, len(all_ids), 100):
+        batch_ids = all_ids[i:i + 100]
+        batch_payload = {
+            f"/api/v1/resource/comments/R_SO_4_{sid}": '{"limit":0}'
+            for sid in batch_ids
+        }
+        try:
+            batch_resp = session.post(
+                "https://music.163.com/api/batch",
+                data=batch_payload,
+                timeout=timeout,
+            )
+            batch_data = batch_resp.json()
+            for sid in batch_ids:
+                key = f"/api/v1/resource/comments/R_SO_4_{sid}"
+                sub = batch_data.get(key, {})
+                comment_counts[sid] = int(sub.get("total") or 0)
+        except Exception:
+            pass  # 降级：评论数为 0
+
     tracks = []
     for tid in track_ids_order:
         t = tracks_map.get(tid)
         if t:
-            tracks.append(_netease_track_to_detail(t))
+            tracks.append(_netease_track_to_detail(t, comments=comment_counts.get(tid, 0)))
 
     return PlaylistDetailInfo(
         playlist_id=playlist_id,
