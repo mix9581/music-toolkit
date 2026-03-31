@@ -2418,6 +2418,141 @@ def _scrape_netease_detail(share_url: str, timeout: int = 15) -> SongDetailInfo:
     )
 
 
+def _scrape_qq_playlist_detail(share_url: str, timeout: int = 15) -> "PlaylistDetailInfo":
+    """抓取 QQ 音乐歌单详情。
+
+    支持:
+      - https://y.qq.com/n/ryqq_v2/playlist/DISSTID
+      - https://y.qq.com/n/ryqq/playlist/DISSTID
+
+    数据来源: c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg
+    注意: QQ 音乐公开 API 不提供单曲评论/收藏/分享数，这些字段固定为 0。
+    """
+    import datetime
+    from urllib.parse import urlparse, parse_qs
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _SCRAPER_PC_UA,
+        "Referer": "https://y.qq.com/",
+    })
+
+    # 提取 playlist ID (disstid)
+    resp = session.get(share_url, timeout=timeout, allow_redirects=True)
+    final_url = resp.url
+
+    disstid = ""
+    m = re.search(r'/playlist/(\d+)', final_url)
+    if m:
+        disstid = m.group(1)
+    if not disstid:
+        qs = parse_qs(urlparse(final_url).query)
+        disstid = (qs.get("id") or qs.get("disstid") or [""])[0]
+    if not disstid:
+        raise ValueError(f"无法从 URL 提取歌单 ID: {final_url}")
+
+    # 旧版歌单 API（稳定可用，无需签名）
+    api_url = (
+        f"https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg"
+        f"?type=1&json=1&utf8=1&onlysong=0&new_format=1&disstid={disstid}&format=json"
+    )
+    api_resp = session.get(api_url, timeout=timeout)
+    data = api_resp.json()
+    cdlist = data.get("cdlist", [])
+    if not cdlist:
+        raise ValueError(f"QQ 音乐 API 未返回歌单数据 (disstid={disstid})")
+
+    cd = cdlist[0]
+    title = cd.get("dissname") or ""
+    creator = cd.get("nickname") or cd.get("nick") or ""
+    cover = cd.get("logo") or ""
+    track_count = int(cd.get("total_song_num") or cd.get("songnum") or 0)
+    description = cd.get("desc") or ""
+
+    def _ts_to_date(ts) -> str:
+        if not ts:
+            return ""
+        try:
+            return datetime.datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+
+    create_time = _ts_to_date(cd.get("ctime"))
+    update_time = _ts_to_date(cd.get("mtime") or cd.get("song_update_time"))
+
+    extra = {
+        "play_count": int(cd.get("visitnum") or 0),
+        "collect_count": 0,
+        "share_count": 0,
+        "comment_count": int(cd.get("cmtnum") or 0),
+    }
+
+    # 解析曲目列表
+    def _qq_track_to_detail(t: dict) -> "SongDetailInfo":
+        song_mid = str(t.get("mid") or "")
+        song_id = str(t.get("id") or "")
+        name = t.get("name") or ""
+        singers = t.get("singer") or []
+        artist = "、".join(s.get("name", "") for s in singers if s.get("name"))
+        duration = int(t.get("interval") or 0)
+        al = t.get("album") or {}
+        album = al.get("name") or ""
+        album_id = str(al.get("mid") or al.get("id") or "")
+        pmid = al.get("pmid") or ""
+        cover_url = (
+            f"https://y.gtimg.cn/music/photo_new/T002R300x300M000{pmid}.jpg"
+            if pmid else ""
+        )
+        publish_date = t.get("time_public") or ""
+        resolved_url = (
+            f"https://y.qq.com/n/ryqq/songDetail/{song_mid}" if song_mid else ""
+        )
+
+        return SongDetailInfo(
+            song_id=song_mid or song_id,
+            platform="qq",
+            name=name,
+            artist=artist,
+            duration=duration,
+            cover=cover_url,
+            album=album,
+            album_id=album_id,
+            publish_date=publish_date,
+            favorites=0,
+            comments=0,
+            shares=0,
+            plays=0,
+            audio_url="",
+            lyrics_lrc="",
+            genre="",
+            language="",
+            composers="",
+            lyricists="",
+            qualities="",
+            share_url="",
+            resolved_url=resolved_url,
+            extra={},
+        )
+
+    tracks = [_qq_track_to_detail(t) for t in cd.get("songlist", [])]
+
+    return PlaylistDetailInfo(
+        playlist_id=disstid,
+        platform="qq",
+        title=title,
+        creator=creator,
+        cover=cover,
+        track_count=track_count,
+        create_time=create_time,
+        update_time=update_time,
+        description=description,
+        tracks=tuple(tracks),
+        share_url=share_url,
+        resolved_url=final_url,
+        extra=extra,
+    )
+
+
 def _scrape_qq_detail(share_url: str, timeout: int = 15) -> SongDetailInfo:
     """抓取 QQ 音乐歌曲详情。
 
@@ -2705,10 +2840,13 @@ def get_playlist_detail_from_url(url: str, timeout: int = 15) -> PlaylistDetailI
             return _scrape_soda_playlist_detail(url, timeout=timeout)
         elif platform == "netease":
             return _scrape_netease_playlist_detail(url, timeout=timeout)
+        elif platform == "qq":
+            return _scrape_qq_playlist_detail(url, timeout=timeout)
         else:
             raise ValueError(
                 f"歌单详情暂不支持该平台 URL: {url}\n"
-                "目前支持: 汽水音乐 (qishui.douyin.com)、网易云音乐 (music.163.com)"
+                "目前支持: 汽水音乐 (qishui.douyin.com)、"
+                "网易云音乐 (music.163.com)、QQ音乐 (y.qq.com)"
             )
     except requests.ConnectionError as e:
         raise MusicClientError(f"网络连接失败: {e}")
