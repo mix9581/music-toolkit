@@ -1290,46 +1290,49 @@ class FeishuPusher:
         if fields:
             elements.append(c.card_fields(fields))
 
-        # ── 曲目列表：单 markdown 文本块（比 card_column_set 节省 ~5.5x 空间） ──
+        # ── 曲目列表：分批 2 列 column_set（名称列 | 数据列，逐行对齐） ──
         if display_tracks:
             elements.append(c.card_divider())
 
-            sort_label_map = {
-                "likes": "👍", "comments": "💬", "shares": "🔗", "date": "📅",
-            }
-            arrow = "↓" if sort_desc else "↑"
-
-            # 列头
-            active = sort_label_map.get(sort_by, "")
             show_date = sort_by == "date"
-            if active:
-                header = f"**曲目名 — 歌手**　　　　👍收藏　💬评论　🔗分享"
-                if show_date:
-                    header = f"**曲目名 — 歌手**　　　　📅日期　👍收藏　💬评论　🔗分享"
-            else:
-                header = "**曲目名 — 歌手**　　　　👍收藏　💬评论　🔗分享"
 
-            lines = [header, ""]
-            for i, t in enumerate(display_tracks, 1):
-                link = t.resolved_url or (
-                    f"https://music.douyin.com/qishui/share/track?track_id={t.song_id}"
-                    if t.song_id else ""
-                )
-                name = f"[{t.name}]({link})" if link else t.name
-                if show_date:
-                    date_str = t.publish_date or "—"
-                    lines.append(
-                        f"{i}. **{name}** — {t.artist}"
-                        f"　{date_str}"
-                        f"　{_fmt(t.favorites)}　{_fmt(t.comments)}　{_fmt(t.shares)}"
-                    )
-                else:
-                    lines.append(
-                        f"{i}. **{name}** — {t.artist}"
-                        f"　{_fmt(t.favorites)}　{_fmt(t.comments)}　{_fmt(t.shares)}"
-                    )
+            # 列标题行
+            stat_header = "👍收藏　💬评论　🔗分享"
+            if show_date:
+                stat_header = "📅日期　" + stat_header
+            elements.append(c.card_column_set(
+                c.card_column([c.card_markdown("**歌曲名 — 歌手**")], weight=6),
+                c.card_column([c.card_markdown(f"**{stat_header}**")], weight=4),
+            ))
 
-            elements.append(c.card_markdown("\n".join(lines)))
+            # 每批 50 首合并成一个 column_set（节省 JSON 开销）
+            _BATCH = 50
+            for start in range(0, len(display_tracks), _BATCH):
+                batch = display_tracks[start:start + _BATCH]
+                name_lines = []
+                stat_lines = []
+                for i, t in enumerate(batch, start + 1):
+                    link = t.resolved_url or (
+                        f"https://music.douyin.com/qishui/share/track?track_id={t.song_id}"
+                        if t.song_id else ""
+                    )
+                    name = f"[{t.name}]({link})" if link else t.name
+                    name_lines.append(f"{i}. **{name}** — {t.artist}")
+
+                    if show_date:
+                        stat_lines.append(
+                            f"{t.publish_date or '—'}　"
+                            f"{_fmt(t.favorites)}　{_fmt(t.comments)}　{_fmt(t.shares)}"
+                        )
+                    else:
+                        stat_lines.append(
+                            f"{_fmt(t.favorites)}　{_fmt(t.comments)}　{_fmt(t.shares)}"
+                        )
+
+                elements.append(c.card_column_set(
+                    c.card_column([c.card_markdown("\n".join(name_lines))], weight=6),
+                    c.card_column([c.card_markdown("\n".join(stat_lines))], weight=4),
+                ))
 
         # ── 底部备注 ──
         sort_label_text = {
@@ -1384,6 +1387,7 @@ class FeishuPusher:
         for i, t in enumerate(tracks, 1):
             rows.append({
                 "#": i,
+                "song_id": t.song_id,
                 "歌名": t.name,
                 "歌手": t.artist,
                 "时长": t.duration_str,
