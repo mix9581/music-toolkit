@@ -1218,6 +1218,8 @@ class FeishuPusher:
         playlist: "PlaylistDetailInfo",
         chat_id: str = None,
         max_tracks: int = 0,
+        sort_by: str = "",
+        sort_desc: bool = True,
     ) -> dict:
         """推送歌单详情卡片（含曲目统计数据）到飞书群。
 
@@ -1225,12 +1227,15 @@ class FeishuPusher:
           - Header: 歌单标题  副标题: 创建者 · N 首
           - Fields: 更新日期、收藏、分享数
           - 列对齐曲目表: card_column_set 每行一首，数字列严格对齐
+            当前排序列的 md_tag 会高亮 + 显示方向箭头
           - 底部备注
 
         Args:
             playlist: PlaylistDetailInfo 对象
             chat_id: 目标群组 ID
             max_tracks: 最多显示曲目数（0 = 全部）
+            sort_by: 排序字段 likes / comments / shares / date（空 = 歌单原序）
+            sort_desc: True=降序 False=升序
 
         Returns:
             飞书 API 响应
@@ -1238,6 +1243,34 @@ class FeishuPusher:
         import datetime as _dt
         c = self._client
         cid = self._resolve_chat_id(chat_id)
+
+        # ── 排序 ──
+        _sort_keys = {
+            "likes":    lambda t: t.favorites,
+            "comments": lambda t: t.comments,
+            "shares":   lambda t: t.shares,
+            "date":     lambda t: t.publish_date or "0000-00-00",
+        }
+        tracks = list(playlist.tracks)
+        if sort_by in _sort_keys:
+            tracks.sort(key=_sort_keys[sort_by], reverse=sort_desc)
+
+        display_tracks = tracks if not max_tracks else tracks[:max_tracks]
+
+        # ── 列标题配置 ──
+        arrow = " ↓" if sort_desc else " ↑"
+        _col_meta = {
+            "likes":    ("点赞",    "blue"),
+            "comments": ("评论",    "turquoise"),
+            "shares":   ("分享",    "violet"),
+            "date":     ("发布日期", "orange"),
+        }
+
+        def _col_label(key: str) -> str:
+            label, color = _col_meta[key]
+            active_color = "red" if sort_by == key else color
+            text = (label + arrow) if sort_by == key else label
+            return c.md_tag(text, active_color)
 
         # ── 歌单基本信息（fields 双列） ──
         fields = []
@@ -1257,68 +1290,70 @@ class FeishuPusher:
             elements.append(c.card_fields(fields))
 
         # ── 曲目列表：card_column_set 逐行对齐 ──
-        if playlist.tracks:
-            display_tracks = (
-                playlist.tracks if not max_tracks else playlist.tracks[:max_tracks]
-            )
-
+        if display_tracks:
             elements.append(c.card_divider())
 
-            # 列标题行（用 md_tag 彩色胶囊）
-            elements.append(c.card_column_set(
-                c.card_column(
-                    [c.card_markdown("**歌曲名 — 歌手**")],
-                    weight=5,
-                ),
-                c.card_column(
-                    [c.card_markdown(c.md_tag("点赞", "blue"))],
-                    weight=2,
-                ),
-                c.card_column(
-                    [c.card_markdown(c.md_tag("评论", "turquoise"))],
-                    weight=2,
-                ),
-                c.card_column(
-                    [c.card_markdown(c.md_tag("分享", "violet"))],
-                    weight=2,
-                ),
-            ))
+            # 是否显示日期列（date 排序时才加）
+            show_date = sort_by == "date"
 
-            # 每首歌一行
+            # 列标题行
+            header_cols = [
+                c.card_column([c.card_markdown("**歌曲名 — 歌手**")], weight=5),
+            ]
+            if show_date:
+                header_cols.append(
+                    c.card_column([c.card_markdown(_col_label("date"))], weight=2)
+                )
+            header_cols += [
+                c.card_column([c.card_markdown(_col_label("likes"))],    weight=2),
+                c.card_column([c.card_markdown(_col_label("comments"))], weight=2),
+                c.card_column([c.card_markdown(_col_label("shares"))],   weight=2),
+            ]
+            elements.append(c.card_column_set(*header_cols))
+
+            # 数据行
             for i, t in enumerate(display_tracks, 1):
                 link = t.resolved_url or (
                     f"https://music.douyin.com/qishui/share/track?track_id={t.song_id}"
                     if t.song_id else ""
                 )
-                name_md = f"[{t.name}]({link}) — {t.artist}" if link else f"{t.name} — {t.artist}"
-                elements.append(c.card_column_set(
-                    c.card_column(
-                        [c.card_markdown(f"{i}. {name_md}")],
-                        weight=5,
-                    ),
-                    c.card_column(
-                        [c.card_markdown(f"{t.favorites:,}")],
-                        weight=2,
-                    ),
-                    c.card_column(
-                        [c.card_markdown(f"{t.comments:,}")],
-                        weight=2,
-                    ),
-                    c.card_column(
-                        [c.card_markdown(f"{t.shares:,}")],
-                        weight=2,
-                    ),
-                ))
+                name_md = (
+                    f"[{t.name}]({link}) — {t.artist}" if link
+                    else f"{t.name} — {t.artist}"
+                )
+                row_cols = [
+                    c.card_column([c.card_markdown(f"{i}. {name_md}")], weight=5),
+                ]
+                if show_date:
+                    row_cols.append(
+                        c.card_column(
+                            [c.card_markdown(t.publish_date or "—")], weight=2
+                        )
+                    )
+                row_cols += [
+                    c.card_column([c.card_markdown(f"{t.favorites:,}")],  weight=2),
+                    c.card_column([c.card_markdown(f"{t.comments:,}")],   weight=2),
+                    c.card_column([c.card_markdown(f"{t.shares:,}")],     weight=2),
+                ]
+                elements.append(c.card_column_set(*row_cols))
 
-            if max_tracks and len(playlist.tracks) > max_tracks:
+            if max_tracks and len(tracks) > max_tracks:
                 elements.append(c.card_note(
-                    c.note_md(f"... 共 {len(playlist.tracks)} 首，仅显示前 {max_tracks} 首")
+                    c.note_md(f"... 共 {len(tracks)} 首，仅显示前 {max_tracks} 首")
                 ))
 
         # ── 底部备注 ──
+        sort_label_map = {
+            "likes": "点赞", "comments": "评论",
+            "shares": "分享", "date": "日期",
+        }
+        sort_info = ""
+        if sort_by in sort_label_map:
+            direction = "降序" if sort_desc else "升序"
+            sort_info = f"  ·  排序: {sort_label_map[sort_by]} {direction}"
         today = _dt.date.today().strftime("%Y-%m-%d")
         elements.append(c.card_note(
-            c.note_md(f"数据来源: {playlist.source_name}  ·  抓取于 {today}")
+            c.note_md(f"数据来源: {playlist.source_name}  ·  抓取于 {today}{sort_info}")
         ))
 
         subtitle = f"{playlist.creator}  ·  {len(playlist.tracks)} 首"
@@ -2862,6 +2897,19 @@ def main():
     p.add_argument("url", help="歌单分享链接（汽水音乐等）")
     p.add_argument("--chat-id", help="飞书群 ID（不指定则用 FEISHU_DEFAULT_CHAT_ID）")
     p.add_argument("--max-tracks", type=int, default=0, help="卡片最多显示曲目数（默认 0 = 全部显示）")
+    p.add_argument(
+        "--sort", dest="sort_by", default="",
+        choices=["likes", "comments", "shares", "date"],
+        help="排序字段: likes/comments/shares/date（默认歌单原序）",
+    )
+    p.add_argument(
+        "--desc", dest="sort_desc", action="store_true", default=True,
+        help="降序排列（默认）",
+    )
+    p.add_argument(
+        "--asc", dest="sort_desc", action="store_false",
+        help="升序排列",
+    )
     p.add_argument("--timeout", type=int, default=15, help="请求超时秒数（默认 15）")
 
     # ── push-webhook ───────────────────────────────────────────────────────
@@ -3415,8 +3463,11 @@ def _run_command(args):
             playlist,
             chat_id=args.chat_id,
             max_tracks=args.max_tracks,
+            sort_by=args.sort_by,
+            sort_desc=args.sort_desc,
         )
-        print(f"✅ 歌单卡片已推送到飞书群")
+        sort_hint = f"（排序: {args.sort_by} {'降序' if args.sort_desc else '升序'}）" if args.sort_by else ""
+        print(f"✅ 歌单卡片已推送到飞书群{sort_hint}")
 
     elif args.command == "push-webhook":
         songs = client.search_songs(args.keyword, sources=args.sources)
