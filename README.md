@@ -560,6 +560,9 @@ python3 music_toolkit.py download-playlist 7602191490944712731 soda \
 # 汽水 — 完整统计，按点赞降序
 python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --sort likes
 
+# 汽水 — 120首长歌单 + 完整 CSV 导出
+python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixhJKBKw/" --sort likes --with-doc
+
 # 网易云 — 含评论数，按评论降序
 python3 music_toolkit.py push-playlist-detail "https://music.163.com/playlist?id=17662978875" --sort comments
 
@@ -569,6 +572,112 @@ python3 music_toolkit.py push-playlist-detail "https://y.qq.com/n/ryqq_v2/playli
 # 酷狗 — 前 10 首 + 歌单基本信息
 python3 music_toolkit.py push-playlist-detail "https://m.kugou.com/songlist/gcid_3zvpukfkz4z092/"
 ```
+
+### `--with-doc` 完整数据导出
+
+卡片受飞书 30KB 上限影响，超长歌单的统计数字会被缩写（如 `67.1万`）。加 `--with-doc` 会在推送卡片后额外发一个 CSV 文件到同群，包含**所有曲目原始数据**：
+
+```
+#, song_id, 歌名, 歌手, 时长, 专辑, 发布日期, 收藏, 评论, 分享, 播放, 链接
+1, 7617026170865223721, 心若止水, w., 3:42, ..., 2025-07-15, 670997, 3468, 32069, 0, https://...
+```
+
+- `song_id` 即汽水音乐的 `track_id`，可用于后续单曲详情抓取
+- CSV 使用 UTF-8 BOM 编码（Excel 直接打开中文不乱码）
+- 不受卡片显示条数限制，185 首全量导出
+
+---
+
+<h2 id="card-tech">歌单卡片技术方案与踩坑记录</h2>
+
+> **AI 助手必读**：本节记录了 `push-playlist-detail` 的完整技术路径、飞书卡片的限制、以及每个平台的数据获取难点。若你需要修改卡片推送逻辑或新增平台，请先阅读本节。
+
+### 整体架构
+
+```
+用户提供歌单分享链接
+    │
+    ▼
+playlist-detail（纯 Python，无需 LLM，无需 go-music-dl）
+    │  HTTP GET → 解析页面/API → PlaylistDetailInfo
+    ▼
+push-playlist-detail（需要 feishu-toolkit）
+    │  构建飞书卡片 JSON → send_card()
+    │  可选：生成 CSV → upload_file() → send_file()
+    ▼
+飞书群收到：① 卡片消息  ② CSV 文件（--with-doc）
+```
+
+**关键依赖链**：`push-playlist-detail` → `FeishuPusher` → 动态导入 `../feishu-toolkit/feishu_toolkit.py` → `FeishuClient.send_card()` / `send_file()`。如果 AI 需要发送卡片，**必须使用 music-toolkit 的 push-* 命令**，不要直接调用 feishu-toolkit 或官方 MCP。
+
+### 飞书卡片限制与对策
+
+| 限制 | 具体值 | 影响 | 对策 |
+|------|--------|------|------|
+| **卡片 JSON 大小** | ~30KB | 超限返回 400 Bad Request | 见下方卡片瘦身方案 |
+| **card_column_set 行数** | 无官方限制 | 但每行一个 column_set 会 JSON 爆炸 | 不使用每行一个 column_set |
+| **markdown 文本长度** | 无官方限制 | 单个 card_markdown 块可放数百行 | 长歌单放在一个块内 |
+
+**卡片瘦身演进路径**（实测数据，120 首歌单）：
+
+| 方案 | JSON 大小 | 支持曲目数 | 对齐效果 |
+|------|----------|-----------|---------|
+| 每行一个 card_column_set (4列) | 78 KB ❌ | ~30 首 | 完美对齐 |
+| 每行一个 card_column_set (2列) | 49 KB ❌ | ~50 首 | 完美对齐 |
+| 单个 card_markdown 文本块 | 13 KB ✅ | 200+ 首 | ❌ 数字不对齐 |
+| **单个 card_column_set + 2列 markdown** | **15 KB ✅** | **200+ 首** | **✅ 左右列对齐** |
+
+最终方案：一个 `card_column_set` 包含两个 `card_column`，每列内部是一个 `card_markdown` 块，用 `\n` 分隔每首歌。左列放歌名（weight=6），右列放统计数字（weight=4），行数自动对齐。
+
+### 各平台数据获取难点
+
+#### 汽水音乐（最佳，完整数据）
+
+- **技术**：SSR 页面，`_ROUTER_DATA` 变量包含全部数据
+- **数据**：收藏/评论/分享/播放、歌词、音频直链、发布日期、曲风全开放
+- **限制**：无。185 首一次 GET 全拿，无需翻页
+- **song_id**：`track_id` 字段，同时也是 `resolved_url` 里的 `track_id=xxx`
+
+#### 网易云音乐（含评论数）
+
+- **技术**：SPA 架构，需调 2 个 API
+  1. `/api/v6/playlist/detail` — 歌单信息 + 前 ~10 首曲目 + `trackIds[]` 全量 ID 列表
+  2. `/api/song/detail` — 补齐 `trackIds[]` 中缺失的曲目
+  3. `/api/batch` — **批量**获取每首歌评论数（一个 POST 请求搞定所有）
+- **难点**：v6 API 只返回前 ~10 首的完整 `tracks[]`，需要用 `trackIds[]` 二次查询
+- **限制**：收藏/分享数平台不开放（公开 API 不返回，即使有 cookie 也拿不到）
+
+#### QQ 音乐（基础信息）
+
+- **技术**：旧版 `fcg_ucc_getcdinfo_byids_cp.fcg` API（无需签名，稳定可用）
+- **数据**：歌名、歌手、时长、专辑、发布日期、封面
+- **难点**：新版 musics.fcg API 需要签名，旧版不需要但没有统计数据
+- **限制**：评论数 API 已封锁（返回 0），收藏/分享数平台不开放
+
+#### 酷狗音乐（前 10 首）
+
+- **技术**：PC 页面 SSR `window.$output` 变量（需随机 X-Forwarded-For 绕过限速）
+- **难点**：
+  - 签名密钥 `NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt` 已知，但 gcid 格式歌单的 `specialid=0`，无法调用 `mobilecdn` 翻页 API
+  - `window.$output` 固定只嵌入前 10 首，与登录状态无关
+  - 加 cookie 后 `window.$output` 依然只有 10 首（服务端 SSR 硬限制）
+- **限制**：完整曲目需要通过签名 API + cookie，当前未实现
+
+### 开发踩坑记录
+
+1. **飞书卡片 400 错误**：120 首歌用每行一个 `card_column_set`（4 列）生成 78KB JSON，直接 400。飞书没有在文档中明确写上限，实测约 30KB。
+
+2. **分批 column_set 有割裂感**：把 50 首一批放进一个 column_set 可以控制大小，但视觉上每 50 首有一个断裂。最终改为全部行放进一个 column_set 的两个 markdown 块。
+
+3. **酷狗 X-Forwarded-For**：不加随机 IP header 时 `window.$output` 不返回数据（空页面），go-music-dl 源码中的 `WithRandomIPHeader()` 是关键。
+
+4. **网易云 v6 API 曲目不全**：`/api/v6/playlist/detail?n=1000` 声称支持 1000 首，实际只返回 ~10 首的完整 `tracks[]`，但 `trackIds[]` 包含全部。需要对比两者差集后二次请求。
+
+5. **网易云 batch 评论 API**：逐首查询评论数太慢（每首一个 HTTP 请求），发现 `/api/batch` 可以在一个 POST 请求中批量查询多首歌的评论数，15 首只需 0.8 秒。
+
+6. **CSV 编码**：普通 UTF-8 的 CSV 用 Excel 打开中文乱码，改用 `utf-8-sig`（带 BOM）后自动识别。
+
+7. **数字格式**：飞书 markdown 里数字 `670,997` 占位太宽，改用万为单位 `67.1万`，既省空间又直观。CSV 保留原始数字。
 
 ## License
 

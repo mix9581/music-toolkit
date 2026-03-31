@@ -287,16 +287,23 @@ python music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNU
 # 典型用法：推送两张卡片，一个点赞降序，一个日期升序
 python music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --sort likes --desc
 python music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --sort date --asc
+
+# 长歌单 + CSV 完整数据导出（--with-doc）
+python music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixhJKBKw/" --sort likes --with-doc
 ```
 
 **飞书卡片样式**:
 - Header: 歌单标题，副标题: 创建者 · N 首
 - Fields: 更新时间、创建时间、收藏数、分享数、播放数
-- 曲目表格：序号 | **歌名（蓝色跳转链接）— 歌手** | 点赞 | 评论 | 分享
-  - 使用 `card_column_set` 原生列布局，列宽严格对齐（5:2:2:2）
-  - 排序列高亮显示红色 + 箭头（↓/↑）
+- 曲目表格：单个 `card_column_set`，左列歌名（weight=6），右列统计数字（weight=4）
+  - 左列: `1. **歌名(跳转链接)** — 歌手`
+  - 右列: `67.1万　3,468　3.2万`（收藏 评论 分享，超万用万为单位）
+  - 200+ 首不触发飞书 30KB 上限（实测 185 首 = 15KB）
   - 按日期排序时额外显示发布日期列
-- 底部备注: 数据来源 · 抓取日期 · 排序信息
+- 底部备注: 数据来源 · 抓取日期 · 排序信息 · CSV 提示
+- `--with-doc`: 卡片后追加 CSV 文件（song_id + 全部原始数据，不受卡片条数限制）
+
+**⚠️ 飞书卡片 JSON 不能超过 ~30KB**。当前方案使用单个 column_set + markdown 文本块，200 首约 15KB。如果未来改回 `card_column_set` 每行一个的样式（更精确对齐），需注意 30 首就会达到 20KB。详见 README 的[卡片技术方案与踩坑记录](#card-tech)。
 
 ---
 
