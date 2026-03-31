@@ -1255,7 +1255,15 @@ class FeishuPusher:
         if sort_by in _sort_keys:
             tracks.sort(key=_sort_keys[sort_by], reverse=sort_desc)
 
-        display_tracks = tracks if not max_tracks else tracks[:max_tracks]
+        # 飞书卡片 JSON 上限约 30KB，每行约 650 bytes
+        # 自动截断：未设 max_tracks 且曲目超过 30 首时，默认取前 30
+        _CARD_SAFE_LIMIT = 30
+        auto_capped = False
+        if not max_tracks and len(tracks) > _CARD_SAFE_LIMIT:
+            display_tracks = tracks[:_CARD_SAFE_LIMIT]
+            auto_capped = True
+        else:
+            display_tracks = tracks if not max_tracks else tracks[:max_tracks]
 
         # ── 列标题配置 ──
         arrow = " ↓" if sort_desc else " ↑"
@@ -1337,11 +1345,6 @@ class FeishuPusher:
                 ]
                 elements.append(c.card_column_set(*row_cols))
 
-            if max_tracks and len(tracks) > max_tracks:
-                elements.append(c.card_note(
-                    c.note_md(f"... 共 {len(tracks)} 首，仅显示前 {max_tracks} 首")
-                ))
-
         # ── 底部备注 ──
         sort_label_map = {
             "likes": "点赞", "comments": "评论",
@@ -1351,9 +1354,15 @@ class FeishuPusher:
         if sort_by in sort_label_map:
             direction = "降序" if sort_desc else "升序"
             sort_info = f"  ·  排序: {sort_label_map[sort_by]} {direction}"
+
+        cap_info = ""
+        if auto_capped:
+            cap_info = f"  ·  显示前 {_CARD_SAFE_LIMIT} 首，共 {len(tracks)} 首（用 --max-tracks 调整）"
+        elif max_tracks and len(tracks) > max_tracks:
+            cap_info = f"  ·  显示前 {max_tracks} 首，共 {len(tracks)} 首"
         today = _dt.date.today().strftime("%Y-%m-%d")
         elements.append(c.card_note(
-            c.note_md(f"数据来源: {playlist.source_name}  ·  抓取于 {today}{sort_info}")
+            c.note_md(f"数据来源: {playlist.source_name}  ·  抓取于 {today}{sort_info}{cap_info}")
         ))
 
         subtitle = f"{playlist.creator}  ·  {len(playlist.tracks)} 首"
