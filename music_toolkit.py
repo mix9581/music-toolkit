@@ -2139,6 +2139,166 @@ def _scrape_soda_playlist_detail(share_url: str, timeout: int = 15) -> "Playlist
     )
 
 
+def _scrape_netease_playlist_detail(share_url: str, timeout: int = 15) -> "PlaylistDetailInfo":
+    """抓取网易云音乐歌单详情。
+
+    支持:
+      - https://music.163.com/playlist?id=xxx
+      - https://music.163.com/#/playlist?id=xxx
+
+    数据来源: music.163.com/api/v6/playlist/detail + song/detail
+    注意: 网易云公开 API 不提供单曲收藏/评论/分享数，这些字段固定为 0。
+    """
+    import datetime
+    from urllib.parse import urlparse, parse_qs
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _SCRAPER_PC_UA,
+        "Referer": "https://music.163.com/",
+    })
+
+    # 提取 playlist ID
+    resp = session.get(share_url, timeout=timeout, allow_redirects=True)
+    resp.raise_for_status()
+    final_url = resp.url
+
+    playlist_id = ""
+    parsed = urlparse(final_url)
+    fragment = parsed.fragment  # /#/playlist?id=xxx
+    if fragment:
+        fqs = parse_qs(fragment.lstrip("/playlist"))
+        playlist_id = (fqs.get("?id") or fqs.get("id") or [""])[0]
+    if not playlist_id:
+        qs = parse_qs(parsed.query)
+        playlist_id = (qs.get("id") or [""])[0]
+    if not playlist_id:
+        m = re.search(r'/playlist[?/].*?id=(\d+)', final_url)
+        if m:
+            playlist_id = m.group(1)
+    if not playlist_id:
+        raise ValueError(f"无法从 URL 提取歌单 ID: {final_url}")
+
+    # 歌单基本信息 + 前N首曲目
+    api_resp = session.get(
+        f"https://music.163.com/api/v6/playlist/detail?id={playlist_id}&n=1000",
+        timeout=timeout,
+    )
+    data = api_resp.json()
+    pl = data.get("playlist", {})
+    if not pl:
+        raise ValueError(f"网易云 API 未返回歌单数据 (id={playlist_id})")
+
+    # 基本信息
+    title = pl.get("name") or ""
+    creator = (pl.get("creator") or {}).get("nickname") or ""
+    cover = pl.get("coverImgUrl") or ""
+    track_count = int(pl.get("trackCount") or 0)
+    description = pl.get("description") or ""
+
+    def _ts_to_date(ts_ms) -> str:
+        if not ts_ms:
+            return ""
+        try:
+            return datetime.datetime.fromtimestamp(int(ts_ms) / 1000).strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+
+    create_time = _ts_to_date(pl.get("createTime"))
+    update_time = _ts_to_date(pl.get("updateTime"))
+
+    extra = {
+        "play_count": int(pl.get("playCount") or 0),
+        "collect_count": int(pl.get("subscribedCount") or 0),
+        "share_count": int(pl.get("shareCount") or 0),
+        "comment_count": int(pl.get("commentCount") or 0),
+    }
+
+    # 合并曲目：tracks[] 已经包含大部分，trackIds[] 包含全部
+    track_ids_order = [str(t["id"]) for t in pl.get("trackIds", [])]
+    tracks_map: dict = {}
+    for t in pl.get("tracks", []):
+        tracks_map[str(t.get("id"))] = t
+
+    # 补齐缺失曲目
+    missing_ids = [tid for tid in track_ids_order if tid not in tracks_map]
+    if missing_ids:
+        # 批量查询，每次最多 1000 个
+        for i in range(0, len(missing_ids), 200):
+            batch = missing_ids[i:i + 200]
+            detail_resp = session.get(
+                f"https://music.163.com/api/song/detail/?ids=[{','.join(batch)}]",
+                timeout=timeout,
+            )
+            for s in detail_resp.json().get("songs", []):
+                tracks_map[str(s.get("id"))] = s
+
+    def _netease_track_to_detail(t: dict) -> "SongDetailInfo":
+        song_id = str(t.get("id") or "")
+        name = t.get("name") or ""
+        # v6 API uses 'ar', older uses 'artists'
+        artists = t.get("ar") or t.get("artists") or []
+        artist = "、".join(a.get("name", "") for a in artists if a.get("name"))
+        duration = int((t.get("dt") or t.get("duration") or 0) // 1000)
+        al = t.get("al") or t.get("album") or {}
+        album = al.get("name") or ""
+        album_id = str(al.get("id") or "")
+        cover_url = al.get("picUrl") or ""
+
+        publish_ts = t.get("publishTime") or al.get("publishTime")
+        publish_date = _ts_to_date(publish_ts) if publish_ts else ""
+
+        resolved_url = f"https://music.163.com/song?id={song_id}" if song_id else ""
+
+        return SongDetailInfo(
+            song_id=song_id,
+            platform="netease",
+            name=name,
+            artist=artist,
+            duration=duration,
+            cover=cover_url,
+            album=album,
+            album_id=album_id,
+            publish_date=publish_date,
+            favorites=0,
+            comments=0,
+            shares=0,
+            plays=0,
+            audio_url="",
+            lyrics_lrc="",
+            genre="",
+            language="",
+            composers="",
+            lyricists="",
+            qualities="",
+            share_url="",
+            resolved_url=resolved_url,
+            extra={},
+        )
+
+    tracks = []
+    for tid in track_ids_order:
+        t = tracks_map.get(tid)
+        if t:
+            tracks.append(_netease_track_to_detail(t))
+
+    return PlaylistDetailInfo(
+        playlist_id=playlist_id,
+        platform="netease",
+        title=title,
+        creator=creator,
+        cover=cover,
+        track_count=track_count,
+        create_time=create_time,
+        update_time=update_time,
+        description=description,
+        tracks=tuple(tracks),
+        share_url=share_url,
+        resolved_url=final_url,
+        extra=extra,
+    )
+
+
 def _scrape_netease_detail(share_url: str, timeout: int = 15) -> SongDetailInfo:
     """抓取网易云音乐歌曲详情。
 
@@ -2519,10 +2679,12 @@ def get_playlist_detail_from_url(url: str, timeout: int = 15) -> PlaylistDetailI
     try:
         if platform == "soda":
             return _scrape_soda_playlist_detail(url, timeout=timeout)
+        elif platform == "netease":
+            return _scrape_netease_playlist_detail(url, timeout=timeout)
         else:
             raise ValueError(
                 f"歌单详情暂不支持该平台 URL: {url}\n"
-                "目前支持: 汽水音乐 (qishui.douyin.com)"
+                "目前支持: 汽水音乐 (qishui.douyin.com)、网易云音乐 (music.163.com)"
             )
     except requests.ConnectionError as e:
         raise MusicClientError(f"网络连接失败: {e}")
