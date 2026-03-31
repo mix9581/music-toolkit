@@ -2418,6 +2418,145 @@ def _scrape_netease_detail(share_url: str, timeout: int = 15) -> SongDetailInfo:
     )
 
 
+def _scrape_kugou_playlist_detail(share_url: str, timeout: int = 15) -> "PlaylistDetailInfo":
+    """抓取酷狗音乐歌单详情。
+
+    支持:
+      - https://www.kugou.com/songlist/gcid_xxx/
+      - https://m.kugou.com/songlist/gcid_xxx/
+
+    数据来源: www.kugou.com/songlist/gcid_xxx/ 页面内嵌 window.$output
+    注意:
+      - 需要随机 X-Forwarded-For 绕过限速，否则 window.$output 不返回数据
+      - 每次最多返回前 10 首（SSR 限制），如需全部曲目请设置酷狗 cookie
+      - 酷狗公开 API 不提供单曲评论/收藏/分享数，这些字段固定为 0
+    """
+    import datetime
+    import random
+
+    gcid_match = re.search(r'(gcid_[a-zA-Z0-9]+)', share_url)
+    if not gcid_match:
+        raise ValueError(f"无法从 URL 提取酷狗歌单 ID (gcid_xxx): {share_url}")
+    gcid = gcid_match.group(1)
+
+    # 随机 IP 绕过限速（与 go-music-dl 相同策略）
+    rand_ip = (
+        f"{random.randint(1, 254)}.{random.randint(0, 254)}"
+        f".{random.randint(0, 254)}.{random.randint(1, 254)}"
+    )
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/13.0.3 Mobile/15E148 Safari/604.1"
+        ),
+        "Referer": "http://m.kugou.com",
+        "X-Forwarded-For": rand_ip,
+        "X-Real-IP": rand_ip,
+    })
+
+    resp = session.get(
+        f"https://www.kugou.com/songlist/{gcid}/",
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    resp.raise_for_status()
+    final_url = resp.url
+    html = resp.text
+
+    m = re.search(
+        r"window\.\$output\s*=\s*(\{.+?\})\s*;\s*</script>",
+        html,
+        re.DOTALL,
+    )
+    if not m:
+        raise ValueError(
+            f"无法从酷狗歌单页面提取数据 (未找到 window.$output)\n"
+            f"URL: {final_url}\n"
+            "提示: 酷狗歌单抓取需要随机 IP header 绕过限速，请重试。"
+        )
+
+    data = json.loads(m.group(1))
+    listinfo = data.get("info", {}).get("listinfo", {})
+    songs_raw = data.get("info", {}).get("songs", [])
+
+    # 歌单基本信息
+    title = listinfo.get("name") or ""
+    creator = listinfo.get("list_create_username") or ""
+    pic = listinfo.get("pic") or ""
+    cover = pic.replace("{size}", "240") if pic else ""
+    track_count = int(listinfo.get("count") or 0)
+    description = listinfo.get("intro") or ""
+
+    extra = {
+        "play_count": int(listinfo.get("heat") or 0),
+        "collect_count": int(listinfo.get("collect_count") or 0),
+        "share_count": 0,
+        "comment_count": int(listinfo.get("comment_count") or 0),
+    }
+
+    # 解析曲目（SSR 最多返回 10 首）
+    def _kugou_track_to_detail(t: dict) -> "SongDetailInfo":
+        name = t.get("name") or ""
+        singers = t.get("singerinfo") or []
+        artist = "、".join(s.get("name", "") for s in singers if s.get("name"))
+        duration = int((t.get("timelen") or 0) // 1000)
+        al_info = t.get("albuminfo") or {}
+        album = al_info.get("name") or ""
+        album_id = str(t.get("album_id") or "")
+        song_hash = t.get("hash") or ""
+        raw_cover = t.get("cover") or ""
+        cover_url = raw_cover.replace("{size}", "240") if raw_cover else ""
+        resolved_url = (
+            f"https://www.kugou.com/song/#{song_hash}" if song_hash else ""
+        )
+
+        return SongDetailInfo(
+            song_id=song_hash,
+            platform="kugou",
+            name=name,
+            artist=artist,
+            duration=duration,
+            cover=cover_url,
+            album=album,
+            album_id=album_id,
+            publish_date="",
+            favorites=0,
+            comments=0,
+            shares=0,
+            plays=0,
+            audio_url="",
+            lyrics_lrc="",
+            genre="",
+            language="",
+            composers="",
+            lyricists="",
+            qualities="",
+            share_url="",
+            resolved_url=resolved_url,
+            extra={},
+        )
+
+    tracks = [_kugou_track_to_detail(t) for t in songs_raw]
+
+    return PlaylistDetailInfo(
+        playlist_id=gcid,
+        platform="kugou",
+        title=title,
+        creator=creator,
+        cover=cover,
+        track_count=track_count,
+        create_time="",
+        update_time="",
+        description=description,
+        tracks=tuple(tracks),
+        share_url=share_url,
+        resolved_url=final_url,
+        extra=extra,
+    )
+
+
 def _scrape_qq_playlist_detail(share_url: str, timeout: int = 15) -> "PlaylistDetailInfo":
     """抓取 QQ 音乐歌单详情。
 
@@ -2842,11 +2981,14 @@ def get_playlist_detail_from_url(url: str, timeout: int = 15) -> PlaylistDetailI
             return _scrape_netease_playlist_detail(url, timeout=timeout)
         elif platform == "qq":
             return _scrape_qq_playlist_detail(url, timeout=timeout)
+        elif platform == "kugou":
+            return _scrape_kugou_playlist_detail(url, timeout=timeout)
         else:
             raise ValueError(
                 f"歌单详情暂不支持该平台 URL: {url}\n"
                 "目前支持: 汽水音乐 (qishui.douyin.com)、"
-                "网易云音乐 (music.163.com)、QQ音乐 (y.qq.com)"
+                "网易云音乐 (music.163.com)、QQ音乐 (y.qq.com)、"
+                "酷狗音乐 (kugou.com)"
             )
     except requests.ConnectionError as e:
         raise MusicClientError(f"网络连接失败: {e}")
