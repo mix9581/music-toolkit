@@ -29,7 +29,8 @@ triggers:
 
 ## 快速参考
 
-工具位置: `~/music-toolkit/music_toolkit.py`
+工具位置: 当前项目根目录下的 `music_toolkit.py`
+运行方式: 先 `cd` 到 `music-toolkit/` 项目根目录，再执行下面命令
 依赖: `requests` (pip install requests)
 后端: go-music-dl Docker (localhost:8080)
 
@@ -38,76 +39,76 @@ triggers:
 ### 搜索歌曲
 ```bash
 # 全平台搜索
-python ~/music-toolkit/music_toolkit.py search "晴天"
+python music_toolkit.py search "晴天"
 
 # 指定平台搜索
-python ~/music-toolkit/music_toolkit.py search "晴天" --source qq
-python ~/music-toolkit/music_toolkit.py search "晴天" --source qq --source netease
+python music_toolkit.py search "晴天" --source qq
+python music_toolkit.py search "晴天" --source qq --source netease
 
 # JSON 输出（适合程序解析）
-python ~/music-toolkit/music_toolkit.py search "晴天" --json
+python music_toolkit.py search "晴天" --json
 ```
 
 ### 搜索歌单
 ```bash
-python ~/music-toolkit/music_toolkit.py search-playlist "周杰伦精选"
-python ~/music-toolkit/music_toolkit.py search-playlist "周杰伦" --source netease
+python music_toolkit.py search-playlist "周杰伦精选"
+python music_toolkit.py search-playlist "周杰伦" --source netease
 ```
 
 ### 获取歌曲详情（inspect + lyrics）
 ```bash
-python ~/music-toolkit/music_toolkit.py detail <song_id> <source>
+python music_toolkit.py detail <song_id> <source>
 # 例:
-python ~/music-toolkit/music_toolkit.py detail 0042rlGx2WHBrG qq
+python music_toolkit.py detail 0042rlGx2WHBrG qq
 ```
 
 ### 获取歌词
 ```bash
-python ~/music-toolkit/music_toolkit.py lyrics <song_id> <source>
+python music_toolkit.py lyrics <song_id> <source>
 # 例:
-python ~/music-toolkit/music_toolkit.py lyrics 0042rlGx2WHBrG qq
+python music_toolkit.py lyrics 0042rlGx2WHBrG qq
 ```
 
 ### 下载歌曲
 ```bash
-python ~/music-toolkit/music_toolkit.py download <song_id> <source>
+python music_toolkit.py download <song_id> <source>
 
 # 指定歌名和歌手（用于文件名）
-python ~/music-toolkit/music_toolkit.py download 0042rlGx2WHBrG qq --name "晴天" --artist "周杰伦"
+python music_toolkit.py download 0042rlGx2WHBrG qq --name "晴天" --artist "周杰伦"
 
 # 嵌入封面
-python ~/music-toolkit/music_toolkit.py download 0042rlGx2WHBrG qq --embed
+python music_toolkit.py download 0042rlGx2WHBrG qq --embed
 
 # 指定保存目录
-python ~/music-toolkit/music_toolkit.py download 0042rlGx2WHBrG qq --dir /tmp/music
+python music_toolkit.py download 0042rlGx2WHBrG qq --dir /tmp/music
 ```
 
 ### 换源搜索
 ```bash
-python ~/music-toolkit/music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
-python ~/music-toolkit/music_toolkit.py switch-source --name "晴天" --artist "周杰伦" --source qq
+python music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
+python music_toolkit.py switch-source --name "晴天" --artist "周杰伦" --source qq
 ```
 
 ### 查看歌单歌曲
 ```bash
-python ~/music-toolkit/music_toolkit.py playlist <playlist_id> <source>
+python music_toolkit.py playlist <playlist_id> <source>
 # 例:
-python ~/music-toolkit/music_toolkit.py playlist 6792103822 netease
+python music_toolkit.py playlist 6792103822 netease
 ```
 
 ### 批量下载歌单（download-playlist）
 ```bash
 # 下载歌单所有歌曲（自动换源，如原平台不可用会尝试其他平台）
-python ~/music-toolkit/music_toolkit.py download-playlist <playlist_id> <source>
+python music_toolkit.py download-playlist <playlist_id> <source>
 
 # 指定保存目录
-python ~/music-toolkit/music_toolkit.py download-playlist 17662978875 netease --dir ~/Music/陶喆
+python music_toolkit.py download-playlist 17662978875 netease --dir ~/Music/陶喆
 
 # 下载完成后推送报告到飞书 webhook
-python ~/music-toolkit/music_toolkit.py download-playlist 17662978875 netease --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+python music_toolkit.py download-playlist 17662978875 netease --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 
 # JSON 输出（每首歌的下载结果）
-python ~/music-toolkit/music_toolkit.py download-playlist 17662978875 netease --json
+python music_toolkit.py download-playlist 17662978875 netease --json
 ```
 
 **自动换源逻辑**: 对每首歌 → inspect 原平台 → 可用直接下载 → 不可用则 switch_source 找替代 → 下载。同时自动下载歌词文件 (.lrc)。
@@ -115,19 +116,19 @@ python ~/music-toolkit/music_toolkit.py download-playlist 17662978875 netease --
 ### 解析音乐分享链接（parse-url）
 ```bash
 # 解析链接 → 显示歌曲详情 + 歌词
-python ~/music-toolkit/music_toolkit.py parse-url "https://music.163.com/song?id=28707005"
+python music_toolkit.py parse-url "https://music.163.com/song?id=28707005"
 
 # 解析链接 + 下载歌曲文件（自动换源）
-python ~/music-toolkit/music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --download
+python music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --download
 
 # 解析链接 + 推送到飞书 webhook（卡片 + 纯文本歌词）
-python ~/music-toolkit/music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+python music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 
 # 解析 + 下载 + 推送
-python ~/music-toolkit/music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --download --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+python music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --download --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 
 # JSON 输出
-python ~/music-toolkit/music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --json
+python music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --json
 ```
 
 **parse-url 支持的链接类型**：
@@ -139,30 +140,30 @@ python ~/music-toolkit/music_toolkit.py parse-url "https://music.163.com/song?id
 
 ### 列出平台
 ```bash
-python ~/music-toolkit/music_toolkit.py platforms
+python music_toolkit.py platforms
 ```
 
 ### 飞书推送（App API，需配置 FEISHU_APP_ID/SECRET）
 ```bash
 # 推送单曲详情卡片
-python ~/music-toolkit/music_toolkit.py push-song <song_id> <source>
+python music_toolkit.py push-song <song_id> <source>
 
 # 搜索并推送结果卡片
-python ~/music-toolkit/music_toolkit.py push-search "晴天"
-python ~/music-toolkit/music_toolkit.py push-search "晴天" --source qq
+python music_toolkit.py push-search "晴天"
+python music_toolkit.py push-search "晴天" --source qq
 
 # 推送歌单卡片
-python ~/music-toolkit/music_toolkit.py push-playlist <playlist_id> <source>
+python music_toolkit.py push-playlist <playlist_id> <source>
 
 # 指定飞书群
-python ~/music-toolkit/music_toolkit.py push-song <song_id> <source> --chat-id oc_xxx
+python music_toolkit.py push-song <song_id> <source> --chat-id oc_xxx
 ```
 
 ### 飞书 Webhook 推送（无需认证，只需 webhook URL）
 ```bash
 # 搜索歌曲 + 推送到飞书 webhook（卡片 + 歌词）
-python ~/music-toolkit/music_toolkit.py push-webhook "晴天" "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
-python ~/music-toolkit/music_toolkit.py push-webhook "晴天" "https://open.feishu.cn/open-apis/bot/v2/hook/xxx" --source qq
+python music_toolkit.py push-webhook "晴天" "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+python music_toolkit.py push-webhook "晴天" "https://open.feishu.cn/open-apis/bot/v2/hook/xxx" --source qq
 ```
 
 **Webhook 推送发送两条消息**：
@@ -172,8 +173,9 @@ python ~/music-toolkit/music_toolkit.py push-webhook "晴天" "https://open.feis
 ## Python API 用法
 
 ```python
+from pathlib import Path
 import sys
-sys.path.insert(0, os.path.expanduser("~/music-toolkit"))
+sys.path.insert(0, str(Path.cwd()))
 from music_toolkit import MusicClient, FeishuPusher, Song, push_to_webhook
 
 # 初始化客户端
@@ -258,44 +260,44 @@ doc_url = pusher.create_song_document(enriched)
 
 ### 场景 1: 搜索 → 查看详情 → 下载
 ```bash
-python ~/music-toolkit/music_toolkit.py search "晴天" --source qq
+python music_toolkit.py search "晴天" --source qq
 # 从结果中记下 song_id
-python ~/music-toolkit/music_toolkit.py detail 0042rlGx2WHBrG qq
-python ~/music-toolkit/music_toolkit.py download 0042rlGx2WHBrG qq --name "晴天" --artist "周杰伦"
+python music_toolkit.py detail 0042rlGx2WHBrG qq
+python music_toolkit.py download 0042rlGx2WHBrG qq --name "晴天" --artist "周杰伦"
 ```
 
 ### 场景 2: 分享链接 → 一键获取所有信息 + 下载
 ```bash
 # 最常用！用户给一个分享链接，自动获取详情、歌词、下载
-python ~/music-toolkit/music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --download
+python music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --download
 ```
 
 ### 场景 3: 分享链接 → 推送到飞书
 ```bash
-python ~/music-toolkit/music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+python music_toolkit.py parse-url "https://music.163.com/song?id=28707005" --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 ```
 
 ### 场景 4: 搜索 → 推送飞书（webhook，无需认证）
 ```bash
-python ~/music-toolkit/music_toolkit.py push-webhook "晴天" "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+python music_toolkit.py push-webhook "晴天" "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 ```
 
 ### 场景 5: 搜索 → 推送飞书（App API）
 ```bash
-python ~/music-toolkit/music_toolkit.py push-search "晴天"
+python music_toolkit.py push-search "晴天"
 ```
 
 ### 场景 6: 换源并下载
 ```bash
-python ~/music-toolkit/music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
+python music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
 # 从结果中获取新平台的 song_id
-python ~/music-toolkit/music_toolkit.py download <new_id> <new_source>
+python music_toolkit.py download <new_id> <new_source>
 ```
 
 ### 场景 7: 歌单浏览
 ```bash
-python ~/music-toolkit/music_toolkit.py search-playlist "周杰伦" --source netease
-python ~/music-toolkit/music_toolkit.py playlist 6792103822 netease
+python music_toolkit.py search-playlist "周杰伦" --source netease
+python music_toolkit.py playlist 6792103822 netease
 ```
 
 ## 数据模型
