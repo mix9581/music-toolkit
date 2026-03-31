@@ -341,6 +341,91 @@ python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/"
 python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/"
 ```
 
+### 歌单数据抓取 + 飞书推送 + 导出（完整流程）
+
+一条命令完成：抓取歌单 → 推送排行卡片到飞书群 → 创建在线表格 → 发送 CSV + XLSX 文件。
+
+**第 1 步：准备环境（仅首次）**
+
+```bash
+# 安装依赖
+pip install requests openpyxl
+
+# 配置飞书凭证（推送到飞书群时需要）
+export FEISHU_APP_ID="cli_xxx"
+export FEISHU_APP_SECRET="xxx"
+export FEISHU_DEFAULT_CHAT_ID="oc_xxx"
+
+# 确认 feishu-toolkit 在同级目录
+ls ../feishu-toolkit/feishu_toolkit.py
+```
+
+**第 2 步：执行命令**
+
+```bash
+# 仅抓取数据（终端输出，不需要飞书）
+python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixhJKBKw/"
+
+# 抓取 + 推送卡片到飞书群（按点赞降序排列）
+python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixhJKBKw/" --sort likes
+
+# 抓取 + 推送卡片 + 导出在线表格/CSV/XLSX（完整流程）
+python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixhJKBKw/" --sort likes --with-doc
+```
+
+**第 3 步：飞书群收到的内容**
+
+使用 `--with-doc` 后，飞书群会依次收到 4 条消息：
+
+```
+                        push-playlist-detail --sort likes --with-doc
+                                    │
+         ┌──────────────────────────┼──────────────────────────┐
+         ▼                          ▼                          ▼
+  ① 歌单排行卡片              ② CSV + XLSX 文件           ③ 在线表格卡片
+  ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+  │ w.               │     │ w._20260401_     │     │ w. — 完整数据     │
+  │ 创建者 · 120 首  │     │   071002.csv     │     │                  │
+  │ ─────────────── │     │ w._20260401_     │     │ 共 120 首曲目数据 │
+  │ 歌曲名    收藏.. │     │   071002.xlsx    │     │ 已导出            │
+  │ 1.心若止水 67.1万 │     │                  │     │ [打开在线表格]    │
+  │ 2.回溯原点 56.9万 │     │ 点击下载即可     │     │                  │
+  │ ...120首...      │     └──────────────────┘     └──────────────────┘
+  │ 数据来源: Soda   │
+  │ 排序: 点赞 降序  │
+  └──────────────────┘
+```
+
+**三种导出格式对比**
+
+| 格式 | 用途 | 数字格式 | 需要 |
+|------|------|---------|------|
+| **飞书在线表格** | 团队协作，在线排序筛选 | 原始数字 | 飞书凭证 |
+| **CSV** | 万能格式，任何工具可打开 | 文本（防科学计数法） | 飞书凭证 |
+| **XLSX** | 本地 Excel，有表头样式 | 原始数字 + 冻结首行 | 飞书凭证 + openpyxl |
+
+**执行链路（AI 必读）**
+
+```
+python3 music_toolkit.py push-playlist-detail "<url>" --sort likes --with-doc
+    │
+    ├── music_toolkit.py                     ← 本项目
+    │   ├── get_playlist_detail_from_url()   ← 纯 HTTP 抓取，无需 LLM
+    │   ├── FeishuPusher.push_playlist_detail_card()
+    │   │   └── 构建卡片 JSON → send_card()
+    │   └── FeishuPusher._send_playlist_csv()
+    │       ├── create_bitable_with_fields() → 在线表格
+    │       ├── csv.writer() → CSV 文件
+    │       └── openpyxl.Workbook() → XLSX 文件
+    │
+    └── ../feishu-toolkit/feishu_toolkit.py  ← 依赖项目
+        ├── FeishuClient.create_bitable_with_fields()  ← 创建在线表格 + 定义列
+        ├── FeishuClient.create_bitable_records()      ← 批量写入数据
+        ├── FeishuClient.upload_file()                 ← 上传 CSV/XLSX
+        ├── FeishuClient.send_file()                   ← 发送文件到群
+        └── FeishuClient.send_card()                   ← 发送卡片消息
+```
+
 #### 各平台数据能力对比
 
 不同平台的公开 API 开放程度差异很大，直接决定了能抓到的数据粒度：
@@ -547,30 +632,25 @@ python3 music_toolkit.py download-playlist 7602191490944712731 soda \
 
 每首歌下载 3 个文件：`.mp3` + `.lrc`（带时间轴）+ `.txt`（纯文本）。zip 打包后通过飞书云盘分片上传，群内收到 1 条卡片消息 + 1 条歌词文档链接。
 
-### Flow C: 歌单数据监控 + 飞书卡片（v0.3.0 新增）
+### Flow C: 歌单数据监控 + 飞书卡片 + 数据导出（v0.3.x）
 
-| 平台 | 歌单 | 曲目 | 评论数 | 收藏/分享 |
-|------|------|------|--------|-----------|
-| 汽水音乐 | [w. — w.](https://qishui.douyin.com/s/ixrkNUQa/) | 27 首全部 | ✅ | ✅ |
-| 网易云 | [陶喆精选](https://music.163.com/playlist?id=17662978875) | 15 首全部 | ✅ 批量 | ❌ |
-| QQ音乐 | [何玄歌单](https://y.qq.com/n/ryqq_v2/playlist/9582035807) | 25 首全部 | ❌ | ❌ |
-| 酷狗 | [lgy — 每日推荐](https://m.kugou.com/songlist/gcid_3zvpukfkz4z092/) | 10/30 首 | ❌ | ❌ |
+| 平台 | 歌单 | 曲目 | 评论数 | 收藏/分享 | 导出 |
+|------|------|------|--------|-----------|------|
+| 汽水音乐 | [w.](https://qishui.douyin.com/s/ixhJKBKw/) | 120 首全部 | ✅ | ✅ | 在线表格 + CSV + XLSX |
+| 汽水音乐 | [阿勋](https://qishui.douyin.com/s/ixhe6brH/) | 185 首全部 | ✅ | ✅ | 在线表格 + CSV + XLSX |
+| 网易云 | [陶喆精选](https://music.163.com/playlist?id=17662978875) | 15 首全部 | ✅ 批量 | ❌ | 同上 |
+| QQ音乐 | [何玄歌单](https://y.qq.com/n/ryqq_v2/playlist/9582035807) | 25 首全部 | ❌ | ❌ | 同上 |
+| 酷狗 | [lgy — 每日推荐](https://m.kugou.com/songlist/gcid_3zvpukfkz4z092/) | 10/30 首 | ❌ | ❌ | 同上 |
 
 ```bash
-# 汽水 — 完整统计，按点赞降序
-python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --sort likes
-
-# 汽水 — 120首长歌单 + 完整 CSV 导出
+# 汽水 120首 — 卡片 + 在线表格 + CSV + XLSX 一步到位
 python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixhJKBKw/" --sort likes --with-doc
 
 # 网易云 — 含评论数，按评论降序
-python3 music_toolkit.py push-playlist-detail "https://music.163.com/playlist?id=17662978875" --sort comments
+python3 music_toolkit.py push-playlist-detail "https://music.163.com/playlist?id=17662978875" --sort comments --with-doc
 
-# QQ 音乐 — 基础曲目，按日期升序
-python3 music_toolkit.py push-playlist-detail "https://y.qq.com/n/ryqq_v2/playlist/9582035807" --sort date --asc
-
-# 酷狗 — 前 10 首 + 歌单基本信息
-python3 music_toolkit.py push-playlist-detail "https://m.kugou.com/songlist/gcid_3zvpukfkz4z092/"
+# QQ 音乐 — 按日期升序
+python3 music_toolkit.py push-playlist-detail "https://y.qq.com/n/ryqq_v2/playlist/9582035807" --sort date --asc --with-doc
 ```
 
 ### `--with-doc` 完整数据导出
