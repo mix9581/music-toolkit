@@ -1254,28 +1254,33 @@ class FeishuPusher:
         if fields:
             elements.append(self._client.card_fields(fields))
 
-        # ── 曲目列表 ──
+        # ── 曲目列表（Markdown 表格，数字列右对齐）──
         if playlist.tracks:
             display_tracks = (
                 playlist.tracks if not max_tracks else playlist.tracks[:max_tracks]
             )
-            lines = []
+            # 表头
+            rows = [
+                "| # | 歌曲 | 点赞 | 评论 | 分享 |",
+                "|:--|:-----|-----:|-----:|-----:|",
+            ]
             for i, t in enumerate(display_tracks, 1):
-                # 歌曲跳转链接（汽水音乐）
                 link = t.resolved_url or (
                     f"https://music.douyin.com/qishui/share/track?track_id={t.song_id}"
                     if t.song_id else ""
                 )
                 name_part = f"[{t.name}]({link})" if link else t.name
-                lines.append(
-                    f"{i}.  {name_part} — {t.artist}"
-                    f"  点赞 {t.favorites:,}  评论 {t.comments:,}  分享 {t.shares:,}"
+                rows.append(
+                    f"| {i} | {name_part} — {t.artist}"
+                    f" | {t.favorites:,} | {t.comments:,} | {t.shares:,} |"
                 )
             if max_tracks and len(playlist.tracks) > max_tracks:
-                lines.append(f"_...共 {len(playlist.tracks)} 首，仅显示前 {max_tracks} 首_")
+                rows.append(
+                    f"| ... | _共 {len(playlist.tracks)} 首，仅显示前 {max_tracks} 首_ | | | |"
+                )
 
             elements.append(self._client.card_divider())
-            elements.append(self._client.card_markdown("\n".join(lines)))
+            elements.append(self._client.card_markdown("\n".join(rows)))
 
         # ── 底部备注 ──
         today = _dt.date.today().strftime("%Y-%m-%d")
