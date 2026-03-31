@@ -311,13 +311,21 @@ python3 music_toolkit.py music-detail "https://qishui.douyin.com/s/ixrhHvct/" --
 
 输出字段示例（汽水音乐）：歌曲 ID、歌手、专辑、时长、发布日期、曲风、语言、作曲/作词、音质选项、封面、音频直链（~24h 有效）、收藏/评论/分享数、完整 LRC 歌词。
 
+> **单曲详情 (`music-detail`) 各平台数据差异**：汽水音乐返回完整统计数据；网易云和 QQ 音乐返回基础信息（歌名/歌手/专辑/时长/封面），互动统计有限。详见下方歌单详情的[各平台数据能力对比](#各平台数据能力对比)。
+
 ### 歌单详情抓取 + 飞书推送
 
 从歌单分享链接获取歌单统计数据和全部曲目信息，**只抓数据，不下载音乐**（可选下载歌词 `.lrc`）。
 
 ```bash
-# 歌单详情（含所有曲目统计）
+# 汽水音乐歌单（含完整曲目统计：收藏/评论/分享）
 python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/"
+
+# 网易云歌单（含评论数，收藏/分享不可用）
+python3 music_toolkit.py playlist-detail "https://music.163.com/playlist?id=17662978875"
+
+# QQ 音乐歌单（基础信息，单曲统计不可用）
+python3 music_toolkit.py playlist-detail "https://y.qq.com/n/ryqq_v2/playlist/9582035807"
 
 # 同时下载每首歌的歌词文件（.lrc + .txt）
 python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" \
@@ -329,6 +337,24 @@ python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/"
 # 抓取后直接推送到飞书群（需配置 App 环境变量）
 python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/"
 ```
+
+#### 各平台数据能力对比
+
+不同平台的公开 API 开放程度差异很大，直接决定了能抓到的数据粒度：
+
+| 数据项 | 汽水音乐 | 网易云 | QQ音乐 | 酷狗 |
+|--------|:--------:|:------:|:------:|:----:|
+| 歌单基本信息 | ✅ | ✅ | ✅ | ❌ |
+| 曲目列表 | ✅ | ✅ | ✅ | ❌ |
+| 单曲评论数 | ✅ | ✅ batch API | ❌ | ❌ |
+| 单曲收藏数 | ✅ | ❌ | ❌ | ❌ |
+| 单曲分享数 | ✅ | ❌ | ❌ | ❌ |
+| 发布日期 | ✅ | ✅ | ✅ | ❌ |
+| 实现方式 | SSR 页面内嵌 `_ROUTER_DATA`，一次 GET 全拿 | `/api/v6/playlist/detail` + `/api/batch` 批量评论 | `fcg_ucc_getcdinfo_byids_cp.fcg` 旧版 API | 签名密钥已更新，无可用公开 API |
+
+**为什么汽水能拿全部数据？** 汽水音乐采用服务端渲染 (SSR)，打开分享链接时服务器直接将所有统计数据写入 HTML 的 `_ROUTER_DATA` 变量。网易云和 QQ 音乐是纯 SPA 架构，数据靠前端 JS 异步加载，公开 API 有选择性地封锁了互动统计。
+
+所有实现均为纯 HTTP 请求，**无需 cookie / 登录 / 特殊环境**，任何机器都可运行。
 
 CLI 输出示例（演示歌单：[w. — w.](https://qishui.douyin.com/s/ixrkNUQa/)，27 首）：
 
@@ -387,7 +413,7 @@ python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
 | 下载歌单 + 发群 + 歌词文档 | `download-playlist <id> <source> --send-chat oc_xxx --lyrics-doc` |
 | 解析链接并下载 | `parse-url "<url>" --download` |
 | **单曲数据监控** | `music-detail "<share_url>"` |
-| **歌单数据监控** | `playlist-detail "<share_url>"` |
+| **歌单数据监控** | `playlist-detail "<share_url>"` (汽水/网易云/QQ) |
 | **歌单数据 + 推飞书** | `push-playlist-detail "<share_url>"` |
 | **歌单数据 + 下载歌词** | `playlist-detail "<share_url>" --lyrics --dir ./lyrics` |
 | **批量抓取数据** | `music-detail-batch --file urls.txt` |
