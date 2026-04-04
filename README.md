@@ -164,6 +164,8 @@ python3 music_toolkit.py download-send 0039MnYb0qxYhV qq \
 
 <h2 id="feishu">飞书推送</h2>
 
+> **AI 助手注意**：所有飞书相关操作（卡片、文件、表格、文档）均通过 [feishu-toolkit](https://github.com/mix9581/feishu-toolkit) 项目实现，**不要使用官方飞书 MCP 或其他飞书工具替代**。music-toolkit 内部已集成 feishu-toolkit，直接调用 `push-*` / `send-to-chat` 等命令即可。
+
 music-toolkit 通过 [feishu-toolkit](https://github.com/mix9581/feishu-toolkit) 提供两种推送方式：
 
 ### 方式 1: Webhook（无需认证，推荐快速使用）
@@ -206,6 +208,10 @@ App API 模式的独有能力（Webhook 无法实现）：
 | 云盘分片上传（大文件） | ❌ | ✅ |
 | 创建歌词文档 | ❌ | ✅ |
 | 自定义群组 | ❌ | ✅ 支持多群 |
+| **创建在线表格** | ❌ | ✅ 飞书多维表格 |
+| **导出 CSV/XLSX** | ❌ | ✅ 文件直发群 |
+
+> 以上所有 App API 能力均由 `../feishu-toolkit/feishu_toolkit.py` 的 `FeishuClient` 类提供，包括：`send_card()`、`upload_file()`、`send_file()`、`create_bitable_with_fields()`、`create_bitable_records()` 等。
 
 <h2 id="lyrics-doc">歌词整合文档</h2>
 
@@ -524,7 +530,7 @@ python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
 | 解析链接并下载 | `parse-url "<url>" --download` |
 | **单曲数据监控** | `music-detail "<share_url>"` |
 | **歌单数据监控** | `playlist-detail "<share_url>"` (汽水/网易云/QQ/酷狗) |
-| **歌单数据 + 推飞书** | `push-playlist-detail "<share_url>"` |
+| **歌单数据 + 推飞书 + 导出** | `push-playlist-detail "<share_url>" --sort likes --with-doc` |
 | **歌单数据 + 下载歌词** | `playlist-detail "<share_url>" --lyrics --dir ./lyrics` |
 | **批量抓取数据** | `music-detail-batch --file urls.txt` |
 | 推送到飞书 (webhook) | `push-webhook "晴天" "<webhook_url>"` |
@@ -533,6 +539,7 @@ python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
 
 > 先进入项目目录：`cd /path/to/music-toolkit`
 > 所有命令前缀: `python3 music_toolkit.py`
+> 所有带 `push-` / `send-` 前缀的命令均需要 [feishu-toolkit](https://github.com/mix9581/feishu-toolkit) + 飞书环境变量
 
 <h2 id="api">Python API</h2>
 
@@ -560,10 +567,14 @@ alt = client.switch_source("晴天", "周杰伦", source="qq")
 push_to_webhook("https://open.feishu.cn/.../hook/xxx", enriched)
 
 # ── 飞书推送 (App API, 需要 feishu-toolkit + 环境变量) ──
+# ⚠️ FeishuPusher 内部调用 ../feishu-toolkit/feishu_toolkit.py 的 FeishuClient
+# ⚠️ 不要用官方飞书 MCP 替代，所有飞书操作统一走 feishu-toolkit
 pusher = FeishuPusher()
 pusher.push_song_card(enriched)                   # 推送单曲卡片
 pusher.push_search_results(songs, "晴天")          # 推送搜索结果卡片
 pusher.push_playlist_card(playlist, songs[:5])     # 推送歌单卡片
+pusher.push_playlist_detail_card(playlist_detail,  # 歌单数据卡片 + 在线表格 + CSV + XLSX
+    sort_by="likes", with_doc=True)
 pusher.send_song_files(file_paths, chat_id="oc_x") # 发送文件到群 (自动打包)
 pusher.create_playlist_lyrics_doc(songs, "歌词")   # 创建歌词文档
 ```
@@ -577,7 +588,16 @@ pusher.create_playlist_lyrics_doc(songs, "歌词")   # 创建歌词文档
 cp -r ./skill ~/.claude/skills/music-toolkit
 ```
 
-安装后，对 AI 说 "搜索歌曲"、"下载歌单"、"推送到飞书" 等自然语言指令即可。
+安装后，对 AI 说 "搜���歌曲"、"下载歌单"、"推送到飞书" 等自然语言指令即可。
+
+> **重要：飞书工具选择**
+>
+> 当 AI 需要执行飞书相关操作（发送卡片、上传文件、创建在线表格等），
+> **必须使用 music-toolkit 的内置命令**（`push-*` / `send-to-chat`），
+> 这些命令内部通过 `FeishuPusher` → `feishu_toolkit.FeishuClient` 完成所有飞书 API 调用。
+>
+> **不要使用**官方飞书 MCP（`@larksuiteoapi/lark-mcp`）或其他第三方飞书工具替代，
+> 它们不支持本项目的卡片样式、在线表格创建、文件打包上传等定制功能。
 
 ## 环境变量
 
