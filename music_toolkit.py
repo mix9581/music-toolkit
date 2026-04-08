@@ -3182,6 +3182,129 @@ def _source_emoji(source: str) -> str:
     return emoji_map.get(source, "🎵")
 
 
+def _setup_chat_interactive(list_only: bool = False) -> None:
+    """
+    交互式选择飞书群聊并保存配置。
+
+    Args:
+        list_only: 仅列出群聊，不保存配置
+    """
+    # 检查环境变量
+    app_id = os.environ.get("FEISHU_APP_ID", "")
+    app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+
+    if not app_id or not app_secret:
+        print("❌ 错误: 请先设置飞书应用凭证", file=sys.stderr)
+        print("\n请执行以下命令设置环境变量:", file=sys.stderr)
+        print('  export FEISHU_APP_ID="cli_xxx"', file=sys.stderr)
+        print('  export FEISHU_APP_SECRET="xxx"', file=sys.stderr)
+        print("\n然后重新运行: python3 music_toolkit.py setup-chat", file=sys.stderr)
+        sys.exit(1)
+
+    # 动态导入 feishu-toolkit
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent / "feishu-toolkit"))
+        from feishu_toolkit import FeishuClient
+    except ImportError:
+        print("❌ 错误: 无法导入 feishu-toolkit", file=sys.stderr)
+        print("\n请确保 feishu-toolkit 在同级目录:", file=sys.stderr)
+        print("  git clone https://github.com/mix9581/feishu-toolkit.git ../feishu-toolkit", file=sys.stderr)
+        sys.exit(1)
+
+    # 获取群聊列表
+    print("🔍 正在获取群聊列表...")
+    try:
+        client = FeishuClient(app_id=app_id, app_secret=app_secret)
+        chats = client.list_chats(page_size=100)
+    except Exception as e:
+        print(f"❌ 获取群聊列表失败: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not chats:
+        print("❌ 未找到任何群聊", file=sys.stderr)
+        print("\n请确保:", file=sys.stderr)
+        print("  1. 飞书应用已创建并获得权限", file=sys.stderr)
+        print("  2. 机器人已被添加到至少一个群聊中", file=sys.stderr)
+        sys.exit(1)
+
+    # 显示群聊列表
+    print(f"\n📋 找到 {len(chats)} 个群聊:\n")
+    print(f"{'序号':<6} {'群聊名称':<40} {'Chat ID'}")
+    print("─" * 80)
+
+    for idx, chat in enumerate(chats, 1):
+        chat_id = chat.get("chat_id", "")
+        name = chat.get("name", "(未命名群聊)")
+        # 截断过长的名称
+        if len(name) > 38:
+            name = name[:35] + "..."
+        print(f"{idx:<6} {name:<40} {chat_id}")
+
+    # 如果只是列出，直接返回
+    if list_only:
+        print("\n💡 提示: 使用以下命令保存配置:")
+        print("   python3 music_toolkit.py setup-chat")
+        return
+
+    # 交互式选择
+    print("\n" + "─" * 80)
+    while True:
+        try:
+            choice = input(f"\n请选择群聊序号 (1-{len(chats)}, 或按 Ctrl+C 取消): ").strip()
+
+            if not choice:
+                continue
+
+            idx = int(choice)
+            if 1 <= idx <= len(chats):
+                selected_chat = chats[idx - 1]
+                break
+            else:
+                print(f"❌ 请输入 1 到 {len(chats)} 之间的数字")
+        except ValueError:
+            print("❌ 请输入有效的数字")
+        except KeyboardInterrupt:
+            print("\n\n⏹ 已取消")
+            sys.exit(0)
+
+    # 保存配置
+    chat_id = selected_chat.get("chat_id", "")
+    chat_name = selected_chat.get("name", "(未命名群聊)")
+
+    print(f"\n✅ 已选择: {chat_name}")
+    print(f"   Chat ID: {chat_id}")
+
+    # 保存到配置文件
+    config_dir = Path.home() / ".config" / "music-toolkit"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.json"
+
+    config = {}
+    if config_file.exists():
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            pass
+
+    config["feishu_default_chat_id"] = chat_id
+    config["feishu_default_chat_name"] = chat_name
+
+    try:
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        print(f"\n💾 配置已保存到: {config_file}")
+    except Exception as e:
+        print(f"\n⚠️  保存配置文件失败: {e}", file=sys.stderr)
+
+    # 提示用户设置环境变量
+    print("\n📝 请将以下内容添加到你的 shell 配置文件 (~/.bashrc 或 ~/.zshrc):")
+    print(f'   export FEISHU_DEFAULT_CHAT_ID="{chat_id}"')
+    print("\n或者每次使用时通过 --chat-id 参数指定:")
+    print(f'   python3 music_toolkit.py download-send <song_id> <source> --chat-id "{chat_id}"')
+    print("\n✨ 配置完成！现在可以使用飞书推送功能了。")
+
+
 def _format_lyrics_preview(lyrics: str, max_lines: int = 4) -> str:
     """从 LRC 歌词中提取纯文本预览。"""
     lines = []
@@ -3551,6 +3674,10 @@ def main():
     p.add_argument("--chat-id", help="飞书群 chat_id")
     p.add_argument("--zip-name", default="", help="压缩包名称 (多文件时)")
     p.add_argument("--include-lrc", action="store_true", help="同时包含歌词文件 (.lrc)")
+
+    # ── setup-chat ────────────────────────────────────────────────────────
+    p = sub.add_parser("setup-chat", help="交互式选择飞书群聊 (自动保存配置)")
+    p.add_argument("--list-only", action="store_true", help="仅列出群聊，不保存配置")
 
     args = parser.parse_args()
     if not args.command:
@@ -4120,6 +4247,9 @@ def _run_command(args):
         print(f"   歌手: {enriched.artist}")
         print(f"   平台: {enriched.source_name}")
         print(f"   响应: {result.get('msg', 'success')}")
+
+    elif args.command == "setup-chat":
+        _setup_chat_interactive(list_only=args.list_only)
 
     elif args.command == "send-to-chat":
         target = Path(args.path)

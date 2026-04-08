@@ -7,12 +7,30 @@
 
 <p align="center">
   <a href="#quick-start">快速开始</a> ·
-  <a href="#playlist-workflow">歌单下载</a> ·
-  <a href="#data-monitor">数据监控</a> ·
+  <a href="#mode-1-download">模式1: 歌曲下载</a> ·
+  <a href="#mode-2-data-scraping">模式2: 数据抓取</a> ·
   <a href="#feishu">飞书推送</a> ·
-  <a href="#lyrics-doc">歌词文档</a> ·
   <a href="#api">API 参考</a>
 </p>
+
+---
+
+## 🎯 两种核心模式
+
+### 模式 1: 歌曲下载模式
+**用途**: 下载单曲或歌单的音频文件 + 歌词，可选发送到飞书群
+**输出**: MP3 文件 + LRC/TXT 歌词文件
+**飞书集成**:
+- 小文件 (≤30MB): 直接发送到群聊
+- 大文件 (>30MB): 自动分片上传到飞书云盘 + 发送下载卡片
+- 可选创建歌词文档（每首歌一个标题 + 代码块）
+
+### 模式 2: 数据抓取模式
+**用途**: 抓取歌单或单曲的元数据（播放量、评论数、收藏数等），不下载音频
+**输出**: JSON 数据 + CSV 报表
+**飞书集成**:
+- 发送数据卡片到群聊（表格形式展示关键指标）
+- 使用 feishu-toolkit 的富文本卡片能力
 
 ---
 
@@ -52,6 +70,7 @@ go-music-dl   feishu-toolkit (可选)
 - **Docker** — 运行 go-music-dl 后端
 - **Python 3.9+**
 - **requests** — `pip install requests`
+- **(可选) feishu-toolkit** — 解锁飞书推送能力
 
 ### 安装
 
@@ -59,28 +78,97 @@ go-music-dl   feishu-toolkit (可选)
 # 1. 启动 go-music-dl 后端
 docker run -d --name go-music-dl -p 8080:8080 guohuiyuan/go-music-dl:latest
 
-# 2. 克隆项目（可放在任意目录，建议与 feishu-toolkit 同级）
+# 2. 克隆项目（建议与 feishu-toolkit 同级）
 git clone https://github.com/mix9581/music-toolkit.git
-cd /path/to/music-toolkit
+cd music-toolkit
 
 # 3. 安装依赖
 pip install requests
 
 # 4. (可选) 安装 feishu-toolkit — 解锁飞书推送能力
-# 建议与 music-toolkit 放在同一父目录；也可设置 FEISHU_TOOLKIT_PATH 指向它
 git clone https://github.com/mix9581/feishu-toolkit.git ../feishu-toolkit
+
+# 5. (可选) 配置飞书应用凭证
 export FEISHU_APP_ID="cli_xxx"
 export FEISHU_APP_SECRET="xxx"
-export FEISHU_DEFAULT_CHAT_ID="oc_xxx"
 
-# 5. 验证
+# 6. (可选) 交互式选择飞书群聊
+python3 music_toolkit.py setup-chat
+
+# 7. 验证
 python3 music_toolkit.py platforms
 python3 music_toolkit.py search "晴天"
 ```
 
-<h2 id="playlist-workflow">歌单下载（核心场景）</h2>
+### 飞书群聊配置（推荐方式）
 
-### 一键下载整个歌单
+使用 `setup-chat` 命令可以交互式选择飞书群聊，无需手动记忆 Chat ID：
+
+```bash
+# 1. 设置飞书应用凭证（仅需一次）
+export FEISHU_APP_ID="cli_xxx"
+export FEISHU_APP_SECRET="xxx"
+
+# 2. 运行交互式配置
+python3 music_toolkit.py setup-chat
+
+# 输出示例：
+# 🔍 正在获取群聊列表...
+#
+# 📋 找到 5 个群聊:
+#
+# 序号   群聊名称                                  Chat ID
+# ────────────────────────────────────────────────────────────────────────────
+# 1      音乐分享群                                oc_abc123...
+# 2      测试群                                    oc_def456...
+# 3      工作群                                    oc_ghi789...
+#
+# 请选择群聊序号 (1-5, 或按 Ctrl+C 取消): 1
+#
+# ✅ 已选择: 音乐分享群
+#    Chat ID: oc_abc123...
+#
+# 💾 配置已保存到: ~/.config/music-toolkit/config.json
+#
+# 📝 请将以下内容添加到你的 shell 配置文件 (~/.bashrc 或 ~/.zshrc):
+#    export FEISHU_DEFAULT_CHAT_ID="oc_abc123..."
+
+# 3. 将 Chat ID 添加到环境变量（永久生效）
+echo 'export FEISHU_DEFAULT_CHAT_ID="oc_abc123..."' >> ~/.zshrc
+source ~/.zshrc
+
+# 4. 现在可以直接使用飞书推送功能，无需每次指定 --chat-id
+python3 music_toolkit.py download-send 0039MnYb0qxYhV qq --name "晴天" --artist "周杰伦"
+```
+
+**仅列出群聊（不保存配置）**：
+
+```bash
+python3 music_toolkit.py setup-chat --list-only
+```
+
+**更换接收消息的群聊**：
+
+```bash
+# 重新运行 setup-chat 即可选择新的群聊
+python3 music_toolkit.py setup-chat
+```
+
+---
+
+<h2 id="mode-1-download">模式 1: 歌曲下载模式</h2>
+
+### 场景 A: 单曲下载 + 发飞书群
+
+```bash
+# 下载单曲并直接发送 mp3 + txt 歌词到飞书群
+python3 music_toolkit.py download-send 0039MnYb0qxYhV qq \
+  --name "晴天" --artist "周杰伦" --dir ~/Music
+```
+
+**输出**: 群里收到 2 条消息（mp3 音频 + txt 歌词）
+
+### 场景 B: 歌单下载（本地保存）
 
 ```bash
 # QQ 音乐歌单
@@ -89,13 +177,13 @@ python3 music_toolkit.py download-playlist 9582035807 qq --dir ~/Music/歌单
 # 网易云歌单
 python3 music_toolkit.py download-playlist 17662978875 netease --dir ~/Music/陶喆
 
-# 汽水音乐歌单（从分享链接提取 playlist_id）
+# 汽水音乐歌单
 python3 music_toolkit.py download-playlist 7602191490944712731 soda --dir ~/Music/汽水
 ```
 
-**自动换源**：对每首歌先检查原平台 → 不可用则搜索 11 个平台找替代源 → 穷尽所有源直到成功或全部失败。每首歌同时下载 `.lrc`（带时间轴）和 `.txt`（纯文本歌词）。
+**自动换源**: 原平台不可用时自动搜索 11 个平台找替代源，每首歌同时下载 `.lrc`（带时间轴）和 `.txt`（纯文本歌词）。
 
-### 下载 + 发飞书群 + 歌词文档（完整流程）
+### 场景 C: 歌单下载 + 飞书完整推送（推荐）
 
 ```bash
 python3 music_toolkit.py download-playlist 9582035807 qq \
@@ -104,20 +192,15 @@ python3 music_toolkit.py download-playlist 9582035807 qq \
   --lyrics-doc
 ```
 
-这一条命令完成：
+**完整流程**:
 
 ```
-歌单 URL
-  │
-  ▼
 1. 获取歌单歌曲列表 (25 首)
-  │
-  ▼
+   ↓
 2. 逐首下载 + 自动换源
    ├── 原平台可用 → 直接下载 mp3 + lrc
    └── 原平台不可用 → 搜索 11 个平台找替代源
-  │
-  ▼
+   ↓
 3. 打包 zip (所有 mp3 + lrc)
    ├── zip ≤ 30MB → IM 直接发群
    └── zip > 30MB → 飞书云盘分片上传
@@ -126,8 +209,7 @@ python3 music_toolkit.py download-playlist 9582035807 qq \
        └── upload_finish → 返回 file_token
        → 设置组织内分享权限
        → 发送卡片消息 (含下载链接)
-  │
-  ▼
+   ↓
 4. 创建飞书歌词文档
    ├── 每首歌名为 H1 标题
    ├── 歌词内容为代码块 (方便复制)
@@ -135,16 +217,14 @@ python3 music_toolkit.py download-playlist 9582035807 qq \
    → 发送文档链接卡片到群
 ```
 
-**为什么打包成 1 个 zip 而不是逐个发送？**
-
-AI Agent 调用工具时常见的错误做法是逐个上传 20 首歌 → 20 次 API 调用 + 群里 20 条消息。正确做法：
+**为什么打包成 1 个 zip？**
 
 | 方式 | API 调用 | 群消息 | 体验 |
 |------|---------|--------|------|
 | 逐个发送 20 首 | 20 次 | 20 条 | 刷屏 |
 | 打包成 1 个 zip | 1-2 次 | 1 条 | 点击即下载 |
 
-### 下载 + webhook 报告（无需飞书 App 认证）
+### 场景 D: 歌单下载 + Webhook 报告（无需飞书 App 认证）
 
 ```bash
 python3 music_toolkit.py download-playlist 9582035807 qq \
@@ -152,133 +232,302 @@ python3 music_toolkit.py download-playlist 9582035807 qq \
   --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 ```
 
-### 单曲下载 + 直接发群（Flow A）
+---
+
+<h2 id="mode-2-data-scraping">模式 2: 数据抓取模式</h2>
+
+### 场景 A: 抓取歌单数据（纯数据，不下载音频）
 
 ```bash
-# 下载单曲并直接发送 mp3 + txt 歌词到飞书群
-python3 music_toolkit.py download-send 0039MnYb0qxYhV qq \
-  --name "晴天" --artist "周杰伦" --dir ~/Music
+# 抓取 QQ 音乐歌单的元数据
+python3 music_toolkit.py scrape-playlist 9582035807 qq \
+  --output ~/data/playlist_data.json
+
+# 同时生成 CSV 报表
+python3 music_toolkit.py scrape-playlist 9582035807 qq \
+  --output ~/data/playlist_data.json \
+  --csv ~/data/playlist_report.csv
 ```
 
-群里会收到 2 条消息：mp3 音频文件 + txt 纯文本歌词。适合分享单首歌。
+**输出数据包含**:
+- 歌曲基本信息（歌名、歌手、专辑）
+- 播放量、评论数、收藏数
+- 发布时间、时长
+- 平台特有指标（如网易云的云村热度）
 
-<h2 id="feishu">飞书推送</h2>
-
-> **AI 助手注意**：所有飞书相关操作（卡片、文件、表格、文档）均通过 [feishu-toolkit](https://github.com/mix9581/feishu-toolkit) 项目实现，**不要使用官方飞书 MCP 或其他飞书工具替代**。music-toolkit 内部已集成 feishu-toolkit，直接调用 `push-*` / `send-to-chat` 等命令即可。
-
-music-toolkit 通过 [feishu-toolkit](https://github.com/mix9581/feishu-toolkit) 提供两种推送方式：
-
-### 方式 1: Webhook（无需认证，推荐快速使用）
+### 场景 B: 抓取单曲数据
 
 ```bash
-# 搜索歌曲 → 推送卡片 + 歌词到飞书群
-python3 music_toolkit.py push-webhook "晴天" "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+# 抓取单曲元数据
+python3 music_toolkit.py scrape-song 0039MnYb0qxYhV qq \
+  --output ~/data/song_晴天.json
+```
 
-# 解析链接 → 推送
-python3 music_toolkit.py parse-url "https://music.163.com/song?id=28707005" \
+### 场景 C: 数据抓取 + 飞书卡片推送
+
+```bash
+# 抓取数据并发送卡片到飞书群
+python3 music_toolkit.py scrape-playlist 9582035807 qq \
+  --output ~/data/playlist_data.json \
+  --send-card oc_xxx
+```
+
+**飞书卡片示例**:
+
+```
+📊 歌单数据报告
+
+歌单名称: 周杰伦精选
+平台: QQ音乐
+歌曲数量: 25 首
+总播放量: 1.2 亿
+
+Top 5 热门歌曲:
+1. 晴天 - 播放 2340 万
+2. 稻香 - 播放 1890 万
+3. 七里香 - 播放 1650 万
+...
+
+[查看完整数据] (附件: playlist_data.json)
+```
+
+**实现方式**: 使用 `feishu-toolkit` 的富文本卡片构建能力，支持表格、图片、超链接等元素。
+
+### 场景 D: 数据抓取 + Webhook 推送
+
+```bash
+python3 music_toolkit.py scrape-playlist 9582035807 qq \
+  --output ~/data/playlist_data.json \
   --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 ```
 
-### 方式 2: App API（需配置环境变量，功能更全）
+---
+
+<h2 id="feishu">飞书推送集成</h2>
+
+> **⚠️ AI 助手必读**：所有飞书相关操作（卡片、文件、表格、文档）**必须通过 [feishu-toolkit](https://github.com/mix9581/feishu-toolkit) 实现**，不要使用官方飞书 MCP 或其他飞书工具替代。music-toolkit 内部已集成 feishu-toolkit，直接调用命令即可。
+
+### 配置步骤（推荐方式）
+
+#### 步骤 1: 获取飞书应用凭证
+
+在[飞书开放平台](https://open.feishu.cn/)创建应用，获取 App ID 和 App Secret。
+
+#### 步骤 2: 设置环境变量
 
 ```bash
 export FEISHU_APP_ID="cli_xxx"
 export FEISHU_APP_SECRET="xxx"
-export FEISHU_DEFAULT_CHAT_ID="oc_xxx"
-
-# 推送单曲卡片（含歌词预览、音质、时长）
-python3 music_toolkit.py push-song <song_id> <source>
-
-# 搜索 → 推送搜索结果卡片
-python3 music_toolkit.py push-search "晴天"
-
-# 推送歌单卡片
-python3 music_toolkit.py push-playlist <playlist_id> <source>
-
-# 发送歌曲文件到群（单首直接发，多首打包 zip）
-python3 music_toolkit.py send-to-chat ~/Music/*.mp3
 ```
 
-App API 模式的独有能力（Webhook 无法实现）：
+#### 步骤 3: 交互式选择群聊（推荐）
 
-| 能力 | Webhook | App API |
-|------|:-------:|:-------:|
-| 推送卡片消息 | ✅ | ✅ |
-| 发送歌曲文件 | ❌ | ✅ |
-| 云盘分片上传（大文件） | ❌ | ✅ |
-| 创建歌词文档 | ❌ | ✅ |
-| 自定义群组 | ❌ | ✅ 支持多群 |
-| **创建在线表格** | ❌ | ✅ 飞书多维表格 |
-| **导出 CSV/XLSX** | ❌ | ✅ 文件直发群 |
-
-> 以上所有 App API 能力均由 `../feishu-toolkit/feishu_toolkit.py` 的 `FeishuClient` 类提供，包括：`send_card()`、`upload_file()`、`send_file()`、`create_bitable_with_fields()`、`create_bitable_records()` 等。
-
-<h2 id="lyrics-doc">歌词整合文档</h2>
-
-将歌单所有歌词整合成一篇飞书文档，方便查阅和分享：
+使用 `setup-chat` 命令自动获取并选择群聊，无需手动记忆 Chat ID：
 
 ```bash
-# CLI: 下载歌单同时创建歌词文档
-python3 music_toolkit.py download-playlist 9582035807 qq \
-  --lyrics-doc --send-chat oc_xxx
+python3 music_toolkit.py setup-chat
 ```
+
+该命令会：
+1. 自动获取机器人已加入的所有群聊
+2. 显示群聊列表供你选择
+3. 保存配置到 `~/.config/music-toolkit/config.json`
+4. 提示你将 `FEISHU_DEFAULT_CHAT_ID` 添加到环境变量
+
+**仅查看群聊列表（不保存）**：
+
+```bash
+python3 music_toolkit.py setup-chat --list-only
+```
+
+**更换接收消息的群聊**：
+
+```bash
+# 重新运行 setup-chat 选择新的群聊
+python3 music_toolkit.py setup-chat
+```
+
+#### 步骤 4: 永久保存配置
+
+将 Chat ID 添加到 shell 配置文件：
+
+```bash
+# 根据 setup-chat 的输出，添加到 ~/.zshrc 或 ~/.bashrc
+echo 'export FEISHU_DEFAULT_CHAT_ID="oc_xxx"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### 两种认证方式
+
+#### 方式 1: Webhook（无需认证，推荐快速使用）
+
+```bash
+# 在飞书群设置中添加自定义机器人，获取 webhook URL
+export FEISHU_WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+
+# 使用 --webhook 参数
+python3 music_toolkit.py download-playlist 9582035807 qq \
+  --webhook "$FEISHU_WEBHOOK_URL"
+```
+
+#### 方式 2: 飞书应用（完整能力，支持文件上传）
+
+```bash
+# 在飞书开放平台创建应用，获取凭证
+export FEISHU_APP_ID="cli_xxx"
+export FEISHU_APP_SECRET="xxx"
+export FEISHU_DEFAULT_CHAT_ID="oc_xxx"  # 群聊 ID
+
+# 使用 --send-chat 参数
+python3 music_toolkit.py download-playlist 9582035807 qq \
+  --send-chat "$FEISHU_DEFAULT_CHAT_ID" \
+  --lyrics-doc
+```
+
+### 文件上传策略（自动处理）
+
+| 文件大小 | 上传方式 | 实现 |
+|---------|---------|------|
+| ≤ 30MB | IM 直接发送 | `feishu-toolkit` 的 `send_file()` |
+| > 30MB | 云盘分片上传 | `feishu-toolkit` 的 `upload_large_file()` + 分片逻辑 |
+
+**分片上传流程**（自动处理，无需手动调用）:
 
 ```python
-# Python API
-from music_toolkit import MusicClient, FeishuPusher
+# music-toolkit 内部调用 feishu-toolkit 的能力
+from feishu_toolkit import upload_large_file, send_card
 
-client = MusicClient()
-pusher = FeishuPusher()
+# 1. 分片上传到飞书云盘
+file_token = upload_large_file(zip_path, chunk_size=4*1024*1024)
 
-# 获取歌单并丰富歌词
-songs = client.get_playlist_songs("9582035807", "qq")
-enriched = [client.enrich_song(s) for s in songs]
+# 2. 设置分享权限
+set_file_permission(file_token, "organization")
 
-# 创建歌词文档
-doc_url = pusher.create_playlist_lyrics_doc(
-    enriched,
-    title="歌单歌词 - 9582035807",
-)
-print(f"文档地址: {doc_url}")
+# 3. 发送下载卡片
+send_card(chat_id, {
+    "title": "🎵 歌单下载完成",
+    "content": f"文件大小: {file_size_mb} MB",
+    "link": f"https://xxx.feishu.cn/file/{file_token}"
+})
 ```
 
-文档结构：
+### 数据抓取卡片示例
 
+使用 `feishu-toolkit` 的富文本卡片能力：
+
+```python
+# music-toolkit 内部实现
+from feishu_toolkit import send_interactive_card
+
+card_data = {
+    "header": {"title": "📊 歌单数据报告"},
+    "elements": [
+        {"tag": "div", "text": f"**歌单名称**: {playlist_name}"},
+        {"tag": "div", "text": f"**平台**: {platform}"},
+        {"tag": "div", "text": f"**歌曲数量**: {song_count} 首"},
+        {"tag": "hr"},
+        {"tag": "markdown", "content": top_songs_table},
+        {"tag": "action", "actions": [
+            {"tag": "button", "text": "查看完整数据", "url": csv_url}
+        ]}
+    ]
+}
+
+send_interactive_card(chat_id, card_data)
 ```
-📄 歌单歌词 - 9582035807
-├── H1: What?? - Kevin MacLeod
-│   ├── 时长: 2:10 | 平台: QQ音乐 | 专辑: ...
-│   └── [歌词代码块]
-├── ── 分割线 ──
-├── H1: 欢沁 - 林海
-│   ├── 时长: 3:45 | 平台: QQ音乐
-│   └── [歌词代码块]
-└── ...
-```
 
-## 搜索 & 下载
+---
 
-### 搜索歌曲
+<h2 id="api">API 参考</h2>
+
+### CLI 命令速查
+
+#### 搜索命令
 
 ```bash
+# 搜索歌曲（跨平台）
 python3 music_toolkit.py search "晴天"
 python3 music_toolkit.py search "晴天" --source qq --source netease
 python3 music_toolkit.py search "晴天" --json
-```
 
-### 搜索歌单
-
-```bash
+# 搜索歌单
 python3 music_toolkit.py search-playlist "周杰伦精选"
 python3 music_toolkit.py search-playlist "周杰伦" --source netease
 ```
 
-### 下载单首歌曲
+#### 下载命令
 
 ```bash
+# 下载单曲
 python3 music_toolkit.py download <song_id> <source>
 python3 music_toolkit.py download <song_id> <source> --name "晴天" --artist "周杰伦" --dir ~/Music
+
+# 下载歌单
+python3 music_toolkit.py download-playlist <playlist_id> <source> --dir ~/Music
+
+# 下载单曲并发送到飞书
+python3 music_toolkit.py download-send <song_id> <source> --name "歌名" --artist "歌手"
 ```
+
+#### 数据抓取命令
+
+```bash
+# 抓取歌单数据
+python3 music_toolkit.py scrape-playlist <playlist_id> <source> --output data.json
+python3 music_toolkit.py scrape-playlist <playlist_id> <source> --output data.json --csv report.csv
+
+# 抓取单曲数据
+python3 music_toolkit.py scrape-song <song_id> <source> --output song.json
+
+# 抓取并推送到飞书
+python3 music_toolkit.py scrape-playlist <playlist_id> <source> --send-card <chat_id>
+```
+
+#### 飞书推送命令
+
+```bash
+# 配置飞书群聊（交互式选择）
+python3 music_toolkit.py setup-chat
+python3 music_toolkit.py setup-chat --list-only  # 仅列出群聊
+
+# Webhook 推送
+python3 music_toolkit.py push-webhook "晴天" <webhook_url>
+python3 music_toolkit.py parse-url <music_url> --webhook <webhook_url>
+
+# App API 推送
+python3 music_toolkit.py push-song <song_id> <source>
+python3 music_toolkit.py push-search "晴天"
+python3 music_toolkit.py push-playlist <playlist_id> <source>
+python3 music_toolkit.py send-to-chat ~/Music/*.mp3
+```
+
+### Python API 示例
+
+```python
+from music_toolkit import MusicClient, FeishuPusher
+
+# 初始化客户端
+client = MusicClient()
+pusher = FeishuPusher()
+
+# 搜索歌曲
+results = client.search("晴天", sources=["qq", "netease"])
+
+# 获取歌单
+songs = client.get_playlist_songs("9582035807", "qq")
+
+# 下载歌曲
+client.download_song(song_id, source, output_dir="~/Music")
+
+# 抓取数据
+data = client.scrape_playlist("9582035807", "qq")
+
+# 推送到飞书
+pusher.send_card(chat_id, card_data)
+pusher.create_playlist_lyrics_doc(songs, title="歌词文档")
+```
+
+---
 
 ### 解析音乐分享链接
 
@@ -522,6 +771,7 @@ python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
 
 | 场景 | 命令 |
 |------|------|
+| **配置飞书群聊** | `setup-chat` |
 | 搜歌 | `search "晴天"` |
 | 下载单曲 | `download <id> <source>` |
 | 单曲下载 + 发群 | `download-send <id> <source> --name "晴天" --artist "周杰伦"` |
@@ -607,8 +857,10 @@ cp -r ./skill ~/.claude/skills/music-toolkit
 | `DOWNLOAD_DIR` | 下载保存目录 | `./downloads` |
 | `FEISHU_APP_ID` | 飞书应用 ID | (App API 推送时需要) |
 | `FEISHU_APP_SECRET` | 飞书应用 Secret | (App API 推送时需要) |
-| `FEISHU_DEFAULT_CHAT_ID` | 默认飞书群 ID | (App API 推送时需要) |
+| `FEISHU_DEFAULT_CHAT_ID` | 默认飞书群 ID | (App API 推送时需要，建议用 `setup-chat` 配置) |
 
+> **推荐配置方式**：使用 `python3 music_toolkit.py setup-chat` 交互式选择群聊，自动获取 Chat ID，无需手动记忆。
+>
 > Webhook 推送不需要环境变量，只需提供 webhook URL。
 
 ## 测试
