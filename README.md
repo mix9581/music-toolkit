@@ -100,6 +100,108 @@ python3 music_toolkit.py platforms
 python3 music_toolkit.py search "晴天"
 ```
 
+### Cookie 管理（访问会员歌曲/完整歌单）
+
+部分平台需要登录态才能访问完整内容（如酷狗完整歌单、QQ音乐会员歌曲等）。music-toolkit 支持通过 Cookie 管理功能设置登录凭证。
+
+#### 方式 1: 命令行设置（推荐）
+
+```bash
+# 查看当前 Cookie 配置
+python3 music_toolkit.py cookie list
+
+# 设置单个平台 Cookie
+python3 music_toolkit.py cookie set netease "MUSIC_U=your_cookie_here"
+python3 music_toolkit.py cookie set qq "uin=123456; qm_keyst=xxx"
+
+# 删除指定平台 Cookie
+python3 music_toolkit.py cookie delete netease qq
+
+# 清除所有 Cookie
+python3 music_toolkit.py cookie clear
+```
+
+#### 方式 2: 从环境变量加载
+
+```bash
+# 设置环境变量
+export NETEASE_COOKIE="MUSIC_U=xxx"
+export QQ_MUSIC_COOKIE="uin=xxx; qm_keyst=xxx"
+export KUGOU_COOKIE="xxx"
+
+# 加载到 go-music-dl
+python3 music_toolkit.py cookie load --env
+```
+
+#### 方式 3: 从 JSON 文件加载
+
+创建 `.music_cookies.json` 文件：
+
+```json
+{
+  "netease": "MUSIC_U=your_cookie_here",
+  "qq": "uin=123456; qm_keyst=xxx",
+  "kugou": "your_kugou_cookie"
+}
+```
+
+加载 Cookie：
+
+```bash
+# 从默认文件加载
+python3 music_toolkit.py cookie load
+
+# 从指定文件加载
+python3 music_toolkit.py cookie load --file my_cookies.json
+
+# 保存当前 Cookie 到文件
+python3 music_toolkit.py cookie save --file backup.json
+```
+
+#### 如何获取 Cookie？
+
+1. **浏览器开发者工具**:
+   - 打开音乐平台网站并登录
+   - 按 F12 打开开发者工具
+   - 切换到 "Network" 标签
+   - 刷新页面，找到任意请求
+   - 在 Request Headers 中找到 `Cookie` 字段
+   - 复制完整 Cookie 字符串
+
+2. **支持的平台**:
+   - `netease` - 网易云音乐
+   - `qq` - QQ音乐
+   - `kugou` - 酷狗音乐
+   - `kuwo` - 酷我音乐
+   - `migu` - 咪咕音乐
+   - `bilibili` - 哔哩哔哩
+
+3. **Cookie 存储位置**:
+   - Cookie 保存在 go-music-dl 的数据库中 (`data/cookies.json`)
+   - 重启 Docker 容器后仍然有效
+   - 可以随时通过 `cookie list` 查看当前配置
+
+#### 使用示例
+
+```bash
+# 1. 设置网易云 Cookie（访问会员歌曲）
+python3 music_toolkit.py cookie set netease "MUSIC_U=xxx"
+
+# 2. 设置酷狗 Cookie（获取完整歌单，默认只返回前10首）
+python3 music_toolkit.py cookie set kugou "xxx"
+
+# 3. 验证 Cookie 是否生效
+python3 music_toolkit.py cookie list
+
+# 4. 下载需要会员的歌曲
+python3 music_toolkit.py download SONG_ID netease
+
+# 5. 获取酷狗完整歌单（超过10首）
+python3 music_toolkit.py download-playlist PLAYLIST_ID kugou
+```
+
+---
+
 ### 飞书群聊配置（推荐方式）
 
 使用 `setup-chat` 命令可以交互式选择飞书群聊，无需手动记忆 Chat ID：
@@ -236,69 +338,84 @@ python3 music_toolkit.py download-playlist 9582035807 qq \
 
 <h2 id="mode-2-data-scraping">模式 2: 数据抓取模式</h2>
 
-### 场景 A: 抓取歌单数据（纯数据，不下载音频）
+数据抓取模式**不依赖 go-music-dl Docker**，直接从平台页面或 API 抓取歌曲/歌单的元数据，无需下载音频文件。
+
+### 支持平台与数据能力
+
+| 平台 | 歌单来源格式 | 曲目列表 | 评论数 | 收藏数 | 分享数 | 发布日期 |
+|------|------------|:-------:|:-----:|:-----:|:-----:|:-------:|
+| **汽水音乐** | `qishui.douyin.com` 分享链接 | ✅ 全量 | ✅ | ✅ | ✅ | ✅ |
+| **网易云音乐** | `music.163.com/playlist?id=xxx` | ✅ 全量 | ✅ 批量 | ❌ | ❌ | ✅ |
+| **QQ 音乐** | `y.qq.com` / `c6.y.qq.com` 短链 | ✅ 全量 | ❌ | ❌ | ❌ | ✅ |
+| **酷狗音乐** | `t1.kugou.com` 短链 / `wwwapi.kugou.com/share/zlist.html` | ✅ 全量 | ❌ | ❌ | ❌ | ❌ |
+| **酷狗音乐** | `kugou.com/songlist/gcid_xxx/` 直链 | ⚠️ 前 10 首 | ❌ | ❌ | ❌ | ✅ 部分 |
+
+> **汽水最全**：SSR 渲染，一次 GET 拿到全部数据；网易云有批量评论 API；QQ 和酷狗互动统计不对外开放。
+
+### 场景 A: 查看歌单数据（终端输出）
 
 ```bash
-# 抓取 QQ 音乐歌单的元数据
-python3 music_toolkit.py scrape-playlist 9582035807 qq \
-  --output ~/data/playlist_data.json
+# 汽水音乐（全量统计数据）
+python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/"
 
-# 同时生成 CSV 报表
-python3 music_toolkit.py scrape-playlist 9582035807 qq \
-  --output ~/data/playlist_data.json \
-  --csv ~/data/playlist_report.csv
+# 网易云（含评论数 + 发布日期）
+python3 music_toolkit.py playlist-detail "https://music.163.com/playlist?id=17662978875"
+
+# QQ 音乐（含专辑 + 发布日期）
+python3 music_toolkit.py playlist-detail "https://c6.y.qq.com/base/fcgi-bin/u?__=yJqRiy5AM0uy"
+
+# 酷狗（短链 → 全量；直链 → 仅前10首）
+python3 music_toolkit.py playlist-detail "https://t1.kugou.com/2jaCZcaG1V2"
+python3 music_toolkit.py playlist-detail "https://wwwapi.kugou.com/share/zlist.html?_t=xxx&chain=xxx&..."
+
+# JSON 输出（含完整曲目数组，方便程序处理）
+python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --json
 ```
 
-**输出数据包含**:
-- 歌曲基本信息（歌名、歌手、专辑）
-- 播放量、评论数、收藏数
-- 发布时间、时长
-- 平台特有指标（如网易云的云村热度）
+### 场景 B: 生成飞书多维表格（`playlist-to-table`）
 
-### 场景 B: 抓取单曲数据
+一条命令完成：抓取歌单 → 创建飞书在线多维表格，**汽水 / 网易云 / QQ / 酷狗通用**。
 
 ```bash
-# 抓取单曲元数据
-python3 music_toolkit.py scrape-song 0039MnYb0qxYhV qq \
-  --output ~/data/song_晴天.json
+# 基础用法（不需要 --sort，直接建表）
+python3 music_toolkit.py playlist-to-table "https://qishui.douyin.com/s/ixrkNUQa/"
+python3 music_toolkit.py playlist-to-table "https://music.163.com/playlist?id=17662978875"
+python3 music_toolkit.py playlist-to-table "https://c6.y.qq.com/base/fcgi-bin/u?__=yJqRiy5AM0uy"
+python3 music_toolkit.py playlist-to-table "https://t1.kugou.com/2jaCZcaG1V2"
+
+# 按点赞降序排列
+python3 music_toolkit.py playlist-to-table "<url>" --sort likes
+
+# 建表后向飞书群发送含链接的卡片
+python3 music_toolkit.py playlist-to-table "<url>" --sort likes --chat-id oc_xxx
 ```
 
-### 场景 C: 数据抓取 + 飞书卡片推送
+**多维表格字段（13 列，各平台统一结构）**：
+
+| 列 | 说明 | 汽水 | 网易云 | QQ | 酷狗 |
+|----|------|:---:|:-----:|:--:|:---:|
+| 序号 | 排序后的行号 | ✅ | ✅ | ✅ | ✅ |
+| 平台 | 数据来源平台名 | ✅ | ✅ | ✅ | ✅ |
+| song_id | 平台内部歌曲 ID | ✅ | ✅ | ✅ | hash |
+| 歌名 | 歌曲标题 | ✅ | ✅ | ✅ | ✅ |
+| 歌手 | 演唱艺人 | ✅ | ✅ | ✅ | ✅ |
+| 时长 | MM:SS 格式 | ✅ | ✅ | ✅ | ✅ |
+| 专辑 | 所属专辑名 | ✅ | ✅ | ✅ | ❌ |
+| 发布日期 | YYYY-MM-DD | ✅ | ✅ | ✅ | ❌ |
+| 收藏 | 收藏/点赞数 | ✅ | 0 | 0 | 0 |
+| 评论 | 评论数 | ✅ | ✅ | 0 | 0 |
+| 分享 | 分享数 | ✅ | 0 | 0 | 0 |
+| 播放 | 播放次数 | ✅ | 0 | 0 | 0 |
+| 链接 | 歌曲原始链接（纯文本，可复制） | ✅ | ✅ | ✅ | 搜索链接 |
+
+### 场景 C: 推送飞书卡片 + 导出（`push-playlist-detail`）
 
 ```bash
-# 抓取数据并发送卡片到飞书群
-python3 music_toolkit.py scrape-playlist 9582035807 qq \
-  --output ~/data/playlist_data.json \
-  --send-card oc_xxx
-```
+# 抓取 + 推送排行卡片（按点赞降序）
+python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --sort likes
 
-**飞书卡片示例**:
-
-```
-📊 歌单数据报告
-
-歌单名称: 周杰伦精选
-平台: QQ音乐
-歌曲数量: 25 首
-总播放量: 1.2 亿
-
-Top 5 热门歌曲:
-1. 晴天 - 播放 2340 万
-2. 稻香 - 播放 1890 万
-3. 七里香 - 播放 1650 万
-...
-
-[查看完整数据] (附件: playlist_data.json)
-```
-
-**实现方式**: 使用 `feishu-toolkit` 的富文本卡片构建能力，支持表格、图片、超链接等元素。
-
-### 场景 D: 数据抓取 + Webhook 推送
-
-```bash
-python3 music_toolkit.py scrape-playlist 9582035807 qq \
-  --output ~/data/playlist_data.json \
-  --webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+# 抓取 + 推送卡片 + 创建多维表格 + 发送 CSV/XLSX（完整流程）
+python3 music_toolkit.py push-playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --sort likes --with-doc
 ```
 
 ---
@@ -472,15 +589,26 @@ python3 music_toolkit.py download-send <song_id> <source> --name "歌名" --arti
 #### 数据抓取命令
 
 ```bash
-# 抓取歌单数据
-python3 music_toolkit.py scrape-playlist <playlist_id> <source> --output data.json
-python3 music_toolkit.py scrape-playlist <playlist_id> <source> --output data.json --csv report.csv
+# 单曲详情（汽水/网易云/QQ）
+python3 music_toolkit.py music-detail "<share_url>"
+python3 music_toolkit.py music-detail "<share_url>" --lyrics --json
 
-# 抓取单曲数据
-python3 music_toolkit.py scrape-song <song_id> <source> --output song.json
+# 批量单曲详情
+python3 music_toolkit.py music-detail-batch "<url1>" "<url2>"
+python3 music_toolkit.py music-detail-batch --file urls.txt --delay 2.0
 
-# 抓取并推送到飞书
-python3 music_toolkit.py scrape-playlist <playlist_id> <source> --send-card <chat_id>
+# 歌单详情（汽水/网易云/QQ/酷狗）
+python3 music_toolkit.py playlist-detail "<share_url>"
+python3 music_toolkit.py playlist-detail "<share_url>" --json
+python3 music_toolkit.py playlist-detail "<share_url>" --lyrics --dir ./lyrics
+
+# 歌单 → 飞书多维表格（四平台通用）
+python3 music_toolkit.py playlist-to-table "<share_url>"
+python3 music_toolkit.py playlist-to-table "<share_url>" --sort likes --chat-id oc_xxx
+
+# 歌单 → 飞书卡片推送
+python3 music_toolkit.py push-playlist-detail "<share_url>" --sort likes
+python3 music_toolkit.py push-playlist-detail "<share_url>" --sort likes --with-doc
 ```
 
 #### 飞书推送命令
@@ -690,7 +818,7 @@ python3 music_toolkit.py push-playlist-detail "<url>" --sort likes --with-doc
 | 数据项 | 汽水音乐 | 网易云 | QQ音乐 | 酷狗 |
 |--------|:--------:|:------:|:------:|:----:|
 | 歌单基本信息 | ✅ | ✅ | ✅ | ✅ |
-| 曲目列表（全部） | ✅ | ✅ | ✅ | ⚠️ 仅前 10 首 |
+| 曲目列表（全部） | ✅ | ✅ | ✅ | ✅ 短链全量 / ⚠️ gcid 直链仅前 10 首 |
 | 单曲评论数 | ✅ | ✅ 批量 API | ❌ | ❌ |
 | 单曲收藏数 | ✅ | ❌ | ❌ | ❌ |
 | 单曲分享数 | ✅ | ❌ | ❌ | ❌ |
@@ -711,15 +839,21 @@ python3 music_toolkit.py push-playlist-detail "<url>" --sort likes --with-doc
 | 汽水音乐 | SSR，数据内嵌 `_ROUTER_DATA` | 服务端渲染，一次 GET 全拿，收藏/评论/分享全开放 |
 | 网易云 | SPA，数据异步加载 | 有 `/api/batch` 可批量拿评论数，收藏/分享不开放 |
 | QQ 音乐 | SPA，数据异步加载 | 旧版 fcg API 返回曲目列表，统计数据被封 |
-| 酷狗 | SPA + 强签名保护 | SSR 仅嵌入前 10 首；完整列表需登录 cookie + 签名 |
+| 酷狗 | SPA + 强签名保护 | `gcid_xxx` 直链 SSR 仅前 10 首；`t1.kugou.com` 短链 → `zlist.html` 可全量（无需 cookie） |
 
-**如何获取酷狗 cookie（解锁全部曲目）**
+**酷狗歌单全量抓取（无需 cookie）**
 
-1. 浏览器打开 [www.kugou.com](https://www.kugou.com) 并登录
-2. F12 → Network → 任意一个 kugou.com 请求 → Request Headers → 复制 `Cookie` 字段
-3. 设置环境变量 `KUGOU_COOKIE="..."` 或在 go-music-dl Web 界面（`localhost:8080` 右下角齿轮）粘贴
+酷狗提供两种分享链接，数据获取方式不同：
 
-> 所有无需 cookie 的实现均为纯 HTTP 请求，**任何机器都可运行，无需登录**。酷狗 10 首限制是服务端 SSR 限制，与登录状态无关。
+| 链接格式 | 示例 | 全量获取 | 说明 |
+|---------|------|:-------:|------|
+| `t1.kugou.com/xxx` 短链 | `https://t1.kugou.com/2jaCZcaG1V2` | ✅ | 重定向到 `zlist.html`，全部曲目内嵌在 JS 变量里 |
+| `wwwapi.kugou.com/share/zlist.html?...` | 浏览器地址栏完整 URL | ✅ | 直接解析，支持两种内嵌格式 |
+| `kugou.com/songlist/gcid_xxx/` 直链 | `https://www.kugou.com/songlist/gcid_3z.../` | ⚠️ 前 10 首 | SSR 硬限制，无公开分页 API |
+
+**推荐做法**：在酷狗 App/网页分享任意一首歌 → 浏览器打开 → 复制地址栏完整 URL → 直接传给 `playlist-to-table`。
+
+> 所有无需 cookie 的实现均为纯 HTTP 请求，**任何机器都可运行，无需登录**。
 
 CLI 输出示例（演示歌单：[w. — w.](https://qishui.douyin.com/s/ixrkNUQa/)，27 首）：
 
@@ -779,9 +913,11 @@ python3 music_toolkit.py switch-source --name "晴天" --artist "周杰伦"
 | 下载歌单 + 发群 + 歌词文档 | `download-playlist <id> <source> --send-chat oc_xxx --lyrics-doc` |
 | 解析链接并下载 | `parse-url "<url>" --download` |
 | **单曲数据监控** | `music-detail "<share_url>"` |
-| **歌单数据监控** | `playlist-detail "<share_url>"` (汽水/网易云/QQ/酷狗) |
-| **歌单数据 + 推飞书 + 导出** | `push-playlist-detail "<share_url>" --sort likes --with-doc` |
-| **歌单数据 + 下载歌词** | `playlist-detail "<share_url>" --lyrics --dir ./lyrics` |
+| **歌单数据监控** | `playlist-detail "<url>"` （汽水/网易云/QQ/酷狗） |
+| **歌单 → 飞书多维表格** | `playlist-to-table "<url>"` |
+| **歌单 → 表格 + 通知群** | `playlist-to-table "<url>" --sort likes --chat-id oc_xxx` |
+| **歌单数据 + 推飞书 + 导出** | `push-playlist-detail "<url>" --sort likes --with-doc` |
+| **歌单数据 + 下载歌词** | `playlist-detail "<url>" --lyrics --dir ./lyrics` |
 | **批量抓取数据** | `music-detail-batch --file urls.txt` |
 | 推送到飞书 (webhook) | `push-webhook "晴天" "<webhook_url>"` |
 | 推送到飞书 (App API) | `push-search "晴天"` |

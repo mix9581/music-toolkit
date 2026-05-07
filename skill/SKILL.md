@@ -71,6 +71,7 @@ triggers:
 | 查看歌单里有哪些歌、统计数据 | 📊 数据监控 | `playlist-detail "<url>"` | 无需 |
 | 获取某首歌的收藏/评论/分享数 | 📊 数据监控 | `music-detail "<url>"` | 无需 |
 | 把歌单数据推送到飞书群卡片 | 📊+📤 | `push-playlist-detail "<url>"` | 需飞书 |
+| **生成飞书多维表格** | 📊+📤 | `playlist-to-table "<url>"` | 需飞书 |
 | 下载单首歌曲文件 | 🎵 下载 | `download <id> <source>` | go-music-dl |
 | 下载整个歌单 | 🎵 下载 | `download-playlist <id> <source>` | go-music-dl |
 | 搜索歌曲 | 🎵 下载 | `search "关键词"` | go-music-dl |
@@ -259,6 +260,29 @@ python music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" 
 # JSON 输出（含完整曲目数组）
 python music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --json
 ```
+
+### 歌单详情 → 飞书多维表格（playlist-to-table）
+
+⚠️ **此命令需要 feishu-toolkit + 环境变量**（见上方飞书联动说明）
+
+```bash
+# 抓取歌单数据并创建飞书多维表格（汽水/网易云/QQ音乐通用）
+python music_toolkit.py playlist-to-table "https://music.163.com/playlist?id=xxx"
+python music_toolkit.py playlist-to-table "https://qishui.douyin.com/s/xxx/"
+python music_toolkit.py playlist-to-table "https://y.qq.com/n/ryqq/playlist/xxx"
+
+# 按点赞降序排列
+python music_toolkit.py playlist-to-table "<url>" --sort likes
+
+# 创建后向飞书群发送表格链接卡片
+python music_toolkit.py playlist-to-table "<url>" --sort likes --chat-id oc_xxx
+```
+
+**多维表格字段**: 序号 / 平台 / song_id / 歌名 / 歌手 / 时长 / 专辑 / 发布日期 / 收藏 / 评论 / 分享 / 播放 / 链接（超链接类型，可直接跳转）
+
+**与 push-playlist-detail 的区别**:
+- `playlist-to-table`: 只创建多维表格，无群消息（可选加 `--chat-id` 发一条含链接的卡片）
+- `push-playlist-detail`: 发飞书卡片消息（含曲目列表），`--with-doc` 时附加创建多维表格
 
 ### 歌单详情 + 推送飞书卡片（push-playlist-detail）
 
@@ -535,6 +559,8 @@ class Playlist:
 | **单曲数据监控** | `music-detail "<share_url>"` |
 | **歌单数据监控** | `playlist-detail "<share_url>"` |
 | **歌单数据 + 推飞书卡片** | `push-playlist-detail "<share_url>" --sort likes` |
+| **歌单数据 → 飞书多维表格** | `playlist-to-table "<share_url>" --sort likes` |
+| **歌单数据 → 表格 + 通知群** | `playlist-to-table "<share_url>" --sort likes --chat-id oc_xxx` |
 | **歌单数据 + 下载歌词** | `playlist-detail "<share_url>" --lyrics --dir ./lyrics` |
 | **批量抓取数据** | `music-detail-batch --file urls.txt` |
 | 推送到飞书（webhook，无需认证） | `push-webhook "晴天" "<webhook_url>"` |

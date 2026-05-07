@@ -43,6 +43,7 @@ __version__ = "0.1.0"
 
 DEFAULT_BASE_URL = "http://localhost:8080"
 DEFAULT_DOWNLOAD_DIR = "./downloads"
+DEFAULT_COOKIE_FILE = ".music_cookies.json"
 
 PLATFORMS = {
     "netease": "网易云音乐",
@@ -59,6 +60,16 @@ PLATFORMS = {
 }
 
 ALL_SOURCES = list(PLATFORMS.keys())
+
+# Cookie 环境变量映射
+COOKIE_ENV_VARS = {
+    "netease": "NETEASE_COOKIE",
+    "qq": "QQ_MUSIC_COOKIE",
+    "kugou": "KUGOU_COOKIE",
+    "kuwo": "KUWO_COOKIE",
+    "migu": "MIGU_COOKIE",
+    "bilibili": "BILIBILI_COOKIE",
+}
 
 
 # ─── Data Models ──────────────────────────────────────────────────────────────
@@ -986,6 +997,146 @@ class MusicClient:
         """
         return dict(PLATFORMS)
 
+    # ── Cookie Management ──────────────────────────────────────────────────
+
+    def get_cookies(self) -> dict[str, str]:
+        """获取所有平台的 cookie 配置。
+
+        Returns:
+            {平台代码: cookie值} 字典
+        """
+        resp = self._get("/music/cookies")
+        return resp.json()
+
+    def set_cookies(self, cookies: dict[str, str]) -> None:
+        """设置平台 cookie。
+
+        Args:
+            cookies: {平台代码: cookie值} 字典
+                    例如: {"netease": "MUSIC_U=xxx", "qq": "uin=xxx; qm_keyst=xxx"}
+                    传空字符串可删除对应平台的 cookie
+
+        Example:
+            client.set_cookies({
+                "netease": "MUSIC_U=your_cookie_here",
+                "qq": "uin=123456; qm_keyst=xxx",
+                "kugou": ""  # 删除酷狗 cookie
+            })
+        """
+        resp = self._session.post(
+            f"{self.base_url}/music/cookies",
+            json=cookies,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("status") != "ok":
+            raise MusicClientError(f"设置 cookie 失败: {result}")
+
+    def set_cookie(self, source: str, cookie: str) -> None:
+        """设置单个平台的 cookie。
+
+        Args:
+            source: 平台代码 (netease/qq/kugou/kuwo/migu/bilibili)
+            cookie: cookie 字符串（传空字符串删除）
+
+        Example:
+            client.set_cookie("netease", "MUSIC_U=your_cookie_here")
+        """
+        self.set_cookies({source: cookie})
+
+    def clear_cookies(self, sources: list[str] = None) -> None:
+        """清除指定平台的 cookie。
+
+        Args:
+            sources: 平台列表，None 表示清除所有
+
+        Example:
+            client.clear_cookies(["netease", "qq"])  # 清除网易云和QQ音乐
+            client.clear_cookies()  # 清除所有
+        """
+        if sources is None:
+            # 清除所有：获取当前所有平台，设置为空
+            current = self.get_cookies()
+            cookies_to_clear = {k: "" for k in current.keys()}
+        else:
+            cookies_to_clear = {src: "" for src in sources}
+
+        self.set_cookies(cookies_to_clear)
+
+    def load_cookies_from_env(self) -> dict[str, str]:
+        """从环境变量加载 cookie。
+
+        环境变量命名规则:
+            NETEASE_COOKIE, QQ_MUSIC_COOKIE, KUGOU_COOKIE,
+            KUWO_COOKIE, MIGU_COOKIE, BILIBILI_COOKIE
+
+        Returns:
+            成功加载的 cookie 字典
+
+        Example:
+            export NETEASE_COOKIE="MUSIC_U=xxx"
+            export QQ_MUSIC_COOKIE="uin=xxx; qm_keyst=xxx"
+
+            client.load_cookies_from_env()
+        """
+        loaded = {}
+        for source, env_var in COOKIE_ENV_VARS.items():
+            cookie = os.environ.get(env_var, "").strip()
+            if cookie:
+                loaded[source] = cookie
+
+        if loaded:
+            self.set_cookies(loaded)
+
+        return loaded
+
+    def load_cookies_from_file(self, filepath: str = None) -> dict[str, str]:
+        """从 JSON 文件加载 cookie。
+
+        Args:
+            filepath: JSON 文件路径，默认为 .music_cookies.json
+
+        JSON 格式:
+            {
+                "netease": "MUSIC_U=xxx",
+                "qq": "uin=xxx; qm_keyst=xxx",
+                "kugou": "xxx"
+            }
+
+        Returns:
+            成功加载的 cookie 字典
+
+        Example:
+            client.load_cookies_from_file(".music_cookies.json")
+        """
+        filepath = filepath or DEFAULT_COOKIE_FILE
+        if not os.path.exists(filepath):
+            return {}
+
+        with open(filepath, "r", encoding="utf-8") as f:
+            cookies = json.load(f)
+
+        if cookies:
+            self.set_cookies(cookies)
+
+        return cookies
+
+    def save_cookies_to_file(self, filepath: str = None) -> None:
+        """保存当前 cookie 到 JSON 文件。
+
+        Args:
+            filepath: JSON 文件路径，默认为 .music_cookies.json
+
+        Example:
+            client.save_cookies_to_file(".music_cookies.json")
+        """
+        filepath = filepath or DEFAULT_COOKIE_FILE
+        cookies = self.get_cookies()
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(cookies, f, ensure_ascii=False, indent=2)
+
     # ── Internal HTTP ──────────────────────────────────────────────────────
 
     def _get(self, path: str, params: dict = None, stream: bool = False) -> requests.Response:
@@ -1366,6 +1517,96 @@ class FeishuPusher:
 
         return result
 
+    def create_playlist_bitable(
+        self,
+        playlist: "PlaylistDetailInfo",
+        tracks: list = None,
+        sort_by: str = "",
+        sort_desc: bool = True,
+    ) -> str:
+        """创建歌单多维表格，返回 bitable URL。
+
+        字段: 序号 / 平台 / song_id / 歌名 / 歌手 / 时长 / 专辑 / 发布日期 /
+              收藏 / 评论 / 分享 / 播放 / 链接
+
+        支持汽水、网易云、QQ音乐等所有平台，字段统一，无数据的列值为 0。
+
+        Args:
+            playlist:  PlaylistDetailInfo 对象
+            tracks:    已排序曲目列表（None 则按 sort_by 自动排序）
+            sort_by:   likes / comments / shares / date（空 = 歌单原序）
+            sort_desc: True=降序  False=升序
+
+        Returns:
+            飞书多维表格 URL
+        """
+        import datetime as _dt
+        import re as _re
+
+        c = self._client
+
+        if tracks is None:
+            _sort_keys = {
+                "likes":    lambda t: t.favorites,
+                "comments": lambda t: t.comments,
+                "shares":   lambda t: t.shares,
+                "date":     lambda t: t.publish_date or "0000-00-00",
+            }
+            tracks = list(playlist.tracks)
+            if sort_by in _sort_keys:
+                tracks.sort(key=_sort_keys[sort_by], reverse=sort_desc)
+
+        date_str = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_title = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", playlist.title)[:40]
+
+        field_defs = [
+            ("序号",    1),
+            ("平台",    1),
+            ("song_id", 1),
+            ("歌名",    1),
+            ("歌手",    1),
+            ("时长",    1),
+            ("专辑",    1),
+            ("发布日期", 1),
+            ("收藏",    2),
+            ("评论",    2),
+            ("分享",    2),
+            ("播放",    2),
+            ("链接",    1),
+        ]
+        app_token, table_id, bitable_url = c.create_bitable_with_fields(
+            f"{safe_title}_{date_str}", field_defs,
+        )
+
+        platform_name = playlist.source_name
+        records = []
+        for i, t in enumerate(tracks, 1):
+            records.append({"fields": {
+                "序号":    str(i),
+                "平台":    platform_name,
+                "song_id": t.song_id,
+                "歌名":    t.name,
+                "歌手":    t.artist,
+                "时长":    t.duration_str,
+                "专辑":    t.album,
+                "发布日期": t.publish_date,
+                "收藏":    t.favorites,
+                "评论":    t.comments,
+                "分享":    t.shares,
+                "播放":    t.plays,
+                "链接":    t.resolved_url,
+            }})
+
+        for j in range(0, len(records), 500):
+            c.create_bitable_records(app_token, table_id, records[j:j + 500])
+
+        try:
+            c.set_drive_public_permission(app_token, file_type="bitable")
+        except Exception:
+            pass
+
+        return bitable_url
+
     def _send_playlist_csv(
         self,
         playlist: "PlaylistDetailInfo",
@@ -1388,14 +1629,16 @@ class FeishuPusher:
         safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', playlist.title)[:40]
         bitable_name = f"{safe_title}_{date_str}"
 
-        # ── 构建行数据（三种输出共享，数字全部转文本避免科学计数法） ──
-        headers = ["序号", "song_id", "歌名", "歌手", "时长", "专辑",
-                    "发布日期", "收藏", "评论", "分享", "播放", "链接"]
+        # ── 构建行数据（CSV/XLSX 共享，数字全部转文本避免科学计数法） ──
+        headers = ["序号", "平台", "song_id", "歌名", "歌手", "时长", "专辑",
+                   "发布日期", "收藏", "评论", "分享", "播放", "链接"]
+        platform_name = playlist.source_name
         rows = []
         for i, t in enumerate(tracks, 1):
             rows.append([
-                str(i), str(t.song_id), t.name, t.artist, t.duration_str, t.album,
-                t.publish_date, str(t.favorites), str(t.comments), str(t.shares),
+                str(i), platform_name, str(t.song_id), t.name, t.artist,
+                t.duration_str, t.album, t.publish_date,
+                str(t.favorites), str(t.comments), str(t.shares),
                 str(t.plays), t.resolved_url,
             ])
 
@@ -1404,37 +1647,7 @@ class FeishuPusher:
         # ── 1. 飞书多维表格 ──
         bitable_url = ""
         try:
-            field_defs = [
-                ("序号", 1), ("song_id", 1), ("歌名", 1), ("歌手", 1),
-                ("时长", 1), ("专辑", 1), ("发布日期", 1),
-                ("收藏", 2), ("评论", 2), ("分享", 2), ("播放", 2),
-                ("链接", 15),
-            ]
-            app_token, table_id, bitable_url = c.create_bitable_with_fields(
-                bitable_name, field_defs,
-            )
-            # 批量写入（每次最多 500 条）
-            records = []
-            for i, t in enumerate(tracks, 1):
-                link_val = (
-                    {"text": t.name, "link": t.resolved_url}
-                    if t.resolved_url else ""
-                )
-                records.append({"fields": {
-                    "序号": str(i), "song_id": t.song_id,
-                    "歌名": t.name, "歌手": t.artist,
-                    "时长": t.duration_str, "专辑": t.album,
-                    "发布日期": t.publish_date,
-                    "收藏": t.favorites, "评论": t.comments,
-                    "分享": t.shares, "播放": t.plays,
-                    "链接": link_val,
-                }})
-            for j in range(0, len(records), 500):
-                c.create_bitable_records(app_token, table_id, records[j:j + 500])
-            try:
-                c.set_drive_public_permission(app_token, file_type="bitable")
-            except Exception:
-                pass
+            bitable_url = self.create_playlist_bitable(playlist, tracks=tracks)
             print(f"   [在线表格] {bitable_url}")
         except Exception as e:
             print(f"   ⚠️  在线表格创建失败: {e}", file=__import__("sys").stderr)
@@ -1474,7 +1687,9 @@ class FeishuPusher:
                 cell.alignment = Alignment(horizontal="center")
 
             # 数据行（XLSX 用原始数字类型，不会科学计数法）
-            _num_cols = {7, 8, 9, 10}  # 收藏、评论、分享、播放的列索引(0-based)
+            # 新列顺序: 序号(0) 平台(1) song_id(2) 歌名(3) 歌手(4) 时长(5) 专辑(6)
+            #           发布日期(7) 收藏(8) 评论(9) 分享(10) 播放(11) 链接(12)
+            _num_cols = {8, 9, 10, 11}  # 收藏、评论、分享、播放的列索引(0-based)
             for row_idx, row_data in enumerate(rows, 2):
                 for col_idx, val in enumerate(row_data, 1):
                     # 数字列转回 int 给 Excel 用
@@ -1484,7 +1699,7 @@ class FeishuPusher:
 
             # 自动列宽（按内容估算）
             col_widths = {
-                "序号": 6, "song_id": 22, "歌名": 25, "歌手": 15,
+                "序号": 6, "平台": 12, "song_id": 22, "歌名": 25, "歌手": 15,
                 "时长": 8, "专辑": 20, "发布日期": 12,
                 "收藏": 10, "评论": 10, "分享": 10, "播放": 10, "链接": 40,
             }
@@ -2385,7 +2600,7 @@ def _scrape_netease_playlist_detail(share_url: str, timeout: int = 15) -> "Playl
     # 补齐缺失曲目
     missing_ids = [tid for tid in track_ids_order if tid not in tracks_map]
     if missing_ids:
-        # 批量查询，每次最多 1000 个
+        # 批量查询，每次最多 200 个
         for i in range(0, len(missing_ids), 200):
             batch = missing_ids[i:i + 200]
             detail_resp = session.get(
@@ -2394,6 +2609,31 @@ def _scrape_netease_playlist_detail(share_url: str, timeout: int = 15) -> "Playl
             )
             for s in detail_resp.json().get("songs", []):
                 tracks_map[str(s.get("id"))] = s
+
+    # 补齐 publish_date：v6 API 的 publishTime=0 时，改查 song/detail 的 album.publishTime
+    publish_ts_overrides: dict = {}
+    no_date_ids = [
+        tid for tid in tracks_map
+        if not int(tracks_map[tid].get("publishTime") or 0)
+        and not int(
+            (tracks_map[tid].get("al") or tracks_map[tid].get("album") or {}).get("publishTime") or 0
+        )
+    ]
+    if no_date_ids:
+        for i in range(0, len(no_date_ids), 200):
+            batch = no_date_ids[i:i + 200]
+            try:
+                detail_resp = session.get(
+                    f"https://music.163.com/api/song/detail/?ids=[{','.join(batch)}]",
+                    timeout=timeout,
+                )
+                for s in detail_resp.json().get("songs", []):
+                    sid = str(s.get("id"))
+                    pts = (s.get("album") or {}).get("publishTime")
+                    if pts:
+                        publish_ts_overrides[sid] = int(pts)
+            except Exception:
+                pass
 
     def _netease_track_to_detail(t: dict, comments: int = 0) -> "SongDetailInfo":
         song_id = str(t.get("id") or "")
@@ -2407,7 +2647,11 @@ def _scrape_netease_playlist_detail(share_url: str, timeout: int = 15) -> "Playl
         album_id = str(al.get("id") or "")
         cover_url = al.get("picUrl") or ""
 
-        publish_ts = t.get("publishTime") or al.get("publishTime")
+        publish_ts = (
+            t.get("publishTime")
+            or al.get("publishTime")
+            or publish_ts_overrides.get(song_id)
+        )
         publish_date = _ts_to_date(publish_ts) if publish_ts else ""
 
         resolved_url = f"https://music.163.com/song?id={song_id}" if song_id else ""
@@ -2580,6 +2824,165 @@ def _scrape_netease_detail(share_url: str, timeout: int = 15) -> SongDetailInfo:
     )
 
 
+def _kugou_search_url(name: str, artist: str) -> str:
+    """构造酷狗搜索 URL（hash 无法直接寻址，用搜索作为稳定的歌曲链接）。"""
+    from urllib.parse import quote_plus
+    kw = f"{name} {artist}".strip()
+    return (
+        f"https://www.kugou.com/search.html#searchType=song"
+        f"&searchKeyWord={quote_plus(kw)}"
+    ) if kw else ""
+
+
+def _scrape_kugou_zlist(zlist_url: str, share_url: str = "", original_url: str = "",
+                        timeout: int = 15) -> "PlaylistDetailInfo":
+    """解析酷狗 wwwapi.kugou.com/share/zlist.html 格式的歌单分享页面。
+
+    支持两种格式：
+      Format 1（有 global_collection_id，~669KB）：歌曲在 dataobj='[{...}]' HTML 属性中
+      Format 2（无 global_collection_id，~37KB，带 listid）：歌曲在 var dataFromSmarty = [...] 中
+        字段: hash / timelength / author_name / song_name / album_id
+    """
+    import html as _html
+    from urllib.parse import urlparse, parse_qs
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _SCRAPER_PC_UA,
+        "Referer": "https://www.kugou.com/",
+    })
+
+    resp = session.get(zlist_url, timeout=timeout, allow_redirects=True)
+    resp.raise_for_status()
+    html_text = resp.text
+
+    # 从 URL 参数提取 uid / global_collection_id / chain
+    parsed_qs = parse_qs(urlparse(zlist_url).query)
+    uid = (parsed_qs.get("uid") or [""])[0]
+    gcid_raw = (parsed_qs.get("global_collection_id") or [""])[0]
+    chain_code = (parsed_qs.get("chain") or [""])[0]
+
+    def _make_title(text: str) -> str:
+        t = re.sub(r'[_|]?(酷狗音乐|kugou).*$', '', text, flags=re.I).strip()
+        t = re.sub(r'^酷狗.*$', '', t, flags=re.I).strip()
+        return _html.unescape(t)
+
+    title_m = re.search(r'<title>([^<]+)</title>', html_text)
+    raw_title = _make_title(title_m.group(1) if title_m else "")
+    chain_hint = f"酷狗歌单 ({chain_code})" if chain_code else "酷狗歌单"
+    playlist_title = raw_title or gcid_raw or chain_hint
+
+    tracks = []
+
+    # ── 格式路由：有 global_collection_id → Format 1；否则 → Format 2 ──────────
+    use_format1 = bool(gcid_raw)
+
+    # ── Format 1: dataobj 属性（带 global_collection_id 的大页面）──────────────
+    if use_format1:
+        dataobj_list = re.findall(r"dataobj='([^']+)'", html_text)
+        seen_hashes: set = set()
+        for raw_obj in dataobj_list:
+            try:
+                decoded = _html.unescape(raw_obj)
+                arr = json.loads(decoded)
+                if not isinstance(arr, list) or not arr:
+                    continue
+                s = arr[0]
+                song_hash = (s.get("Hash") or s.get("hash") or "").upper()
+                if not song_hash or song_hash in seen_hashes:
+                    continue
+                seen_hashes.add(song_hash)
+                duration = int((s.get("timeLen") or s.get("timelength") or 0) // 1000)
+                file_name = _html.unescape(s.get("FileName") or s.get("audio_name") or "")
+                if " - " in file_name:
+                    artist_part, name_part = file_name.split(" - ", 1)
+                else:
+                    artist_part, name_part = "", file_name
+                tracks.append(SongDetailInfo(
+                    song_id=song_hash, platform="kugou",
+                    name=name_part, artist=artist_part,
+                    duration=duration, cover="", album="",
+                    album_id=str(s.get("albumId") or ""),
+                    publish_date="", favorites=0, comments=0,
+                    shares=0, plays=0, audio_url="", lyrics_lrc="",
+                    genre="", language="", composers="", lyricists="",
+                    qualities="", share_url=share_url,
+                    resolved_url=_kugou_search_url(name_part, artist_part),
+                    extra={},
+                ))
+            except Exception:
+                pass
+
+    # ── Format 2: dataFromSmarty（无 global_collection_id，需保留 listid）────────
+    if not use_format1:
+        # 必须用原始 URL（含 listid）请求，listid-stripped URL 会返回首页
+        target_html = html_text
+        if original_url and original_url != zlist_url:
+            orig_resp = session.get(original_url.split('#')[0], timeout=timeout)
+            target_html = orig_resp.text
+            # 从单曲页标题尝试提取歌单标题（歌曲名 - 歌手名）
+            title_m2 = re.search(r'<title>([^<]+)</title>', target_html)
+            if title_m2:
+                t2 = _make_title(title_m2.group(1))
+                if t2:
+                    playlist_title = t2
+
+        smarty_m = re.search(r'var dataFromSmarty\s*=\s*(\[.+)', target_html)
+        if smarty_m:
+            raw_arr = smarty_m.group(1).rstrip().rstrip(';')
+            decoder = json.JSONDecoder()
+            raw_inner = raw_arr[1:]  # skip leading [
+            while raw_inner.strip():
+                raw_inner = raw_inner.strip().lstrip(',')
+                if raw_inner.startswith(']'):
+                    break
+                try:
+                    s, end = decoder.raw_decode(raw_inner)
+                    raw_inner = raw_inner[end:]
+                except Exception:
+                    break
+                song_hash = (s.get("hash") or "").upper()
+                if not song_hash:
+                    continue
+                duration = int((s.get("timelength") or 0) // 1000)
+                artist_part = _html.unescape(s.get("author_name") or "")
+                name_part = _html.unescape(s.get("song_name") or s.get("audio_name") or "")
+                # audio_name fallback: "Artist - SongName"
+                if not name_part and s.get("audio_name") and " - " in s["audio_name"]:
+                    artist_part, name_part = s["audio_name"].split(" - ", 1)
+                tracks.append(SongDetailInfo(
+                    song_id=song_hash, platform="kugou",
+                    name=_html.unescape(name_part),
+                    artist=artist_part,
+                    duration=duration, cover="", album="",
+                    album_id=str(s.get("album_id") or ""),
+                    publish_date="", favorites=0, comments=0,
+                    shares=0, plays=0, audio_url="", lyrics_lrc="",
+                    genre="", language="", composers="", lyricists="",
+                    qualities="", share_url=share_url,
+                    resolved_url=_kugou_search_url(
+                        _html.unescape(name_part), artist_part
+                    ),
+                    extra={},
+                ))
+
+    return PlaylistDetailInfo(
+        playlist_id=gcid_raw or uid or "unknown",
+        platform="kugou",
+        title=playlist_title,
+        creator=uid or "",
+        cover="",
+        track_count=len(tracks),
+        create_time="",
+        update_time="",
+        description="",
+        tracks=tuple(tracks),
+        share_url=share_url,
+        resolved_url=zlist_url,
+        extra={},
+    )
+
+
 def _scrape_kugou_playlist_detail(share_url: str, timeout: int = 15) -> "PlaylistDetailInfo":
     """抓取酷狗音乐歌单详情。
 
@@ -2595,6 +2998,30 @@ def _scrape_kugou_playlist_detail(share_url: str, timeout: int = 15) -> "Playlis
     """
     import datetime
     import random
+    import html as _html
+
+    # 直接传入 zlist.html URL（去掉 listid 和 fragment 后直接解析）
+    if "zlist.html" in share_url or "wwwapi.kugou.com/share" in share_url:
+        orig = share_url.split('#')[0]
+        clean = re.sub(r'[&?]listid=\d+', '', orig)
+        return _scrape_kugou_zlist(clean, share_url=share_url, original_url=orig, timeout=timeout)
+
+    # 短链 (t1.kugou.com/xxx) 先跟重定向，再判断格式
+    if re.match(r'https?://t\d+\.kugou\.com/', share_url):
+        _redir = requests.Session()
+        _redir.headers["User-Agent"] = _SCRAPER_PC_UA
+        _redir_resp = _redir.get(share_url, timeout=timeout, allow_redirects=True)
+        _redir_url = _redir_resp.url
+
+        if "zlist.html" in _redir_url or "wwwapi.kugou.com/share" in _redir_url:
+            _zlist_url = re.sub(r'[&?]listid=\d+', '', _redir_url)
+            return _scrape_kugou_zlist(
+                _zlist_url, share_url=share_url,
+                original_url=_redir_url, timeout=timeout,
+            )
+
+        # 重定向后尝试再提取 gcid
+        share_url = _redir_url
 
     gcid_match = re.search(r'(gcid_[a-zA-Z0-9]+)', share_url)
     if not gcid_match:
@@ -2670,9 +3097,7 @@ def _scrape_kugou_playlist_detail(share_url: str, timeout: int = 15) -> "Playlis
         song_hash = t.get("hash") or ""
         raw_cover = t.get("cover") or ""
         cover_url = raw_cover.replace("{size}", "240") if raw_cover else ""
-        resolved_url = (
-            f"https://www.kugou.com/song/#{song_hash}" if song_hash else ""
-        )
+        resolved_url = _kugou_search_url(name, artist) if (name or artist) else ""
 
         return SongDetailInfo(
             song_id=song_hash,
@@ -3400,17 +3825,52 @@ def _print_playlist_detail(playlist: "PlaylistDetailInfo", show_lyrics: bool = F
         print(f"   封面:    {playlist.cover}")
 
     if playlist.tracks:
+        has_album = any(t.album for t in playlist.tracks)
+        has_dates = any(t.publish_date for t in playlist.tracks)
+        has_favorites = any(t.favorites for t in playlist.tracks)
+        has_comments = any(t.comments for t in playlist.tracks)
+        has_shares = any(t.shares for t in playlist.tracks)
+        has_links = any(t.resolved_url for t in playlist.tracks)
+
+        # 动态表头
+        header = f"  {'#':<4} {'歌名':<22} {'歌手':<12} {'时长':<6}"
+        separ  = f"  {'─'*4} {'─'*22} {'─'*12} {'─'*6}"
+        if has_album:
+            header += f" {'专辑':<14}"
+            separ  += f" {'─'*14}"
+        if has_dates:
+            header += f" {'发布日期':<10}"
+            separ  += f" {'─'*10}"
+        if has_favorites:
+            header += f" {'收藏':>8}"
+            separ  += f" {'─'*8}"
+        if has_comments:
+            header += f" {'评论':>7}"
+            separ  += f" {'─'*7}"
+        if has_shares:
+            header += f" {'分享':>7}"
+            separ  += f" {'─'*7}"
+
         print(f"\n{'─'*60}")
-        print(f"  {'#':<4} {'歌名':<24} {'歌手':<12} {'时长':<6} {'收藏':>8} {'评论':>7} {'分享':>7}")
-        print(f"  {'─'*4} {'─'*24} {'─'*12} {'─'*6} {'─'*8} {'─'*7} {'─'*7}")
+        print(header)
+        print(separ)
         for i, t in enumerate(playlist.tracks, 1):
-            print(
-                f"  {i:<4} {t.name[:22]:<24} {t.artist[:10]:<12} {t.duration_str:<6}"
-                f" {t.favorites:>8,} {t.comments:>7,} {t.shares:>7,}"
-            )
+            row = f"  {i:<4} {t.name[:20]:<22} {t.artist[:10]:<12} {t.duration_str:<6}"
+            if has_album:
+                row += f" {t.album[:12]:<14}"
+            if has_dates:
+                row += f" {t.publish_date or '':<10}"
+            if has_favorites:
+                row += f" {t.favorites:>8,}"
+            if has_comments:
+                row += f" {t.comments:>7,}"
+            if has_shares:
+                row += f" {t.shares:>7,}"
+            print(row)
+            if has_links and t.resolved_url:
+                print(f"       {t.resolved_url}")
             if show_lyrics and t.lyrics_lrc:
-                preview = t.lyrics_text.splitlines()[:2]
-                for line in preview:
+                for line in t.lyrics_text.splitlines()[:2]:
                     print(f"       ♪ {line}")
 
     print()
@@ -3662,6 +4122,23 @@ def main():
     p.add_argument("--with-doc", action="store_true", dest="with_doc",
                    help="推送后生成 CSV 文件发送到群（包含所有曲目完整数据）")
 
+    # ── playlist-to-table ─────────────────────────────────────────────────
+    p = sub.add_parser(
+        "playlist-to-table",
+        help="抓取歌单数据并创建飞书多维表格（汽水/网易云/QQ音乐通用）",
+    )
+    p.add_argument("url", help="歌单分享链接")
+    p.add_argument("--chat-id", help="可选：创建完成后向该飞书群发送表格链接卡片")
+    p.add_argument(
+        "--sort", dest="sort_by", default="",
+        choices=["likes", "comments", "shares", "date"],
+        help="排序字段: likes/comments/shares/date（默认歌单原序）",
+    )
+    p.add_argument("--desc", dest="sort_desc", action="store_true", default=True,
+                   help="降序排列（默认）")
+    p.add_argument("--asc", dest="sort_desc", action="store_false", help="升序排列")
+    p.add_argument("--timeout", type=int, default=15, help="请求超时秒数（默认 15）")
+
     # ── push-webhook ───────────────────────────────────────────────────────
     p = sub.add_parser("push-webhook", help="搜索歌曲并推送到飞书 webhook")
     p.add_argument("keyword", help="搜索关键词")
@@ -3678,6 +4155,35 @@ def main():
     # ── setup-chat ────────────────────────────────────────────────────────
     p = sub.add_parser("setup-chat", help="交互式选择飞书群聊 (自动保存配置)")
     p.add_argument("--list-only", action="store_true", help="仅列出群聊，不保存配置")
+
+    # ── cookie ────────────────────────────────────────────────────────────
+    p = sub.add_parser("cookie", help="管理平台 Cookie (用于访问会员歌曲/完整歌单)")
+    cookie_sub = p.add_subparsers(dest="cookie_action", help="Cookie 操作")
+
+    # cookie list
+    p_list = cookie_sub.add_parser("list", help="查看当前所有 Cookie")
+    p_list.add_argument("--json", action="store_true", dest="as_json", help="输出 JSON")
+
+    # cookie set
+    p_set = cookie_sub.add_parser("set", help="设置平台 Cookie")
+    p_set.add_argument("source", help="平台代码 (netease/qq/kugou/kuwo/migu/bilibili)")
+    p_set.add_argument("cookie", help="Cookie 字符串")
+
+    # cookie delete
+    p_del = cookie_sub.add_parser("delete", help="删除平台 Cookie")
+    p_del.add_argument("source", nargs="+", help="平台代码 (可多个)")
+
+    # cookie clear
+    cookie_sub.add_parser("clear", help="清除所有 Cookie")
+
+    # cookie load
+    p_load = cookie_sub.add_parser("load", help="从文件或环境变量加载 Cookie")
+    p_load.add_argument("--file", dest="cookie_file", help="JSON 文件路径 (默认 .music_cookies.json)")
+    p_load.add_argument("--env", action="store_true", help="从环境变量加载")
+
+    # cookie save
+    p_save = cookie_sub.add_parser("save", help="保存当前 Cookie 到文件")
+    p_save.add_argument("--file", dest="cookie_file", help="JSON 文件路径 (默认 .music_cookies.json)")
 
     args = parser.parse_args()
     if not args.command:
@@ -4224,6 +4730,47 @@ def _run_command(args):
         sort_hint = f"（排序: {args.sort_by} {'降序' if args.sort_desc else '升序'}）" if args.sort_by else ""
         print(f"✅ 歌单卡片已推送到飞书群{sort_hint}")
 
+    elif args.command == "playlist-to-table":
+        print(f"📋 抓取歌单数据: {args.url[:60]}...")
+        playlist = get_playlist_detail_from_url(args.url, timeout=args.timeout)
+        print(f"   {playlist.title} — {len(playlist.tracks)} 首 [{playlist.source_name}]")
+
+        pusher = FeishuPusher()
+        sort_hint = f"（{args.sort_by} {'降序' if args.sort_desc else '升序'}）" if args.sort_by else ""
+        print(f"   正在创建飞书多维表格{sort_hint}...")
+        bitable_url = pusher.create_playlist_bitable(
+            playlist,
+            sort_by=args.sort_by,
+            sort_desc=args.sort_desc,
+        )
+        print(f"✅ 多维表格已创建")
+        print(f"   {bitable_url}")
+
+        # 可选：向群发送表格链接卡片
+        chat_id = args.chat_id or os.environ.get("FEISHU_DEFAULT_CHAT_ID", "")
+        if chat_id:
+            c = pusher._client
+            cid = pusher._resolve_chat_id(args.chat_id)
+            sort_label = {"likes": "点赞", "comments": "评论",
+                          "shares": "分享", "date": "日期"}.get(args.sort_by, "")
+            sort_note = (
+                f"\n排序: {sort_label} {'↓' if args.sort_desc else '↑'}"
+                if sort_label else ""
+            )
+            card = c.build_card(
+                f"{playlist.title} — 数据表格",
+                [
+                    c.card_markdown(
+                        f"**{playlist.title}**  ·  {playlist.creator}  ·  "
+                        f"{len(playlist.tracks)} 首 [{playlist.source_name}]{sort_note}"
+                    ),
+                    c.card_button("打开多维表格", bitable_url),
+                ],
+                color="wathet",
+            )
+            c.send_card(cid, card)
+            print(f"✅ 表格链接已发送到飞书群")
+
     elif args.command == "push-webhook":
         songs = client.search_songs(args.keyword, sources=args.sources)
         if not songs:
@@ -4250,6 +4797,79 @@ def _run_command(args):
 
     elif args.command == "setup-chat":
         _setup_chat_interactive(list_only=args.list_only)
+
+    elif args.command == "cookie":
+        if not hasattr(args, "cookie_action") or not args.cookie_action:
+            print("❌ 请指定 cookie 操作: list/set/delete/clear/load/save", file=sys.stderr)
+            print("   示例: python music_toolkit.py cookie list")
+            sys.exit(1)
+
+        if args.cookie_action == "list":
+            cookies = client.get_cookies()
+            if args.as_json:
+                _print_json(cookies)
+            else:
+                if not cookies:
+                    print("\n🍪 当前没有设置任何 Cookie\n")
+                    print("💡 设置 Cookie:")
+                    print('   python music_toolkit.py cookie set netease "MUSIC_U=xxx"')
+                    print('   python music_toolkit.py cookie load --env')
+                    print('   python music_toolkit.py cookie load --file .music_cookies.json')
+                else:
+                    print("\n🍪 当前 Cookie 配置:\n")
+                    for source, cookie in cookies.items():
+                        platform_name = PLATFORMS.get(source, source)
+                        cookie_preview = cookie[:50] + "..." if len(cookie) > 50 else cookie
+                        print(f"  {source:<12} ({platform_name})")
+                        print(f"               {cookie_preview}")
+                    print(f"\n  共 {len(cookies)} 个平台")
+
+        elif args.cookie_action == "set":
+            client.set_cookie(args.source, args.cookie)
+            platform_name = PLATFORMS.get(args.source, args.source)
+            print(f"✅ 已设置 {platform_name} ({args.source}) 的 Cookie")
+
+        elif args.cookie_action == "delete":
+            client.clear_cookies(args.source)
+            for src in args.source:
+                platform_name = PLATFORMS.get(src, src)
+                print(f"✅ 已删除 {platform_name} ({src}) 的 Cookie")
+
+        elif args.cookie_action == "clear":
+            client.clear_cookies()
+            print("✅ 已清除所有 Cookie")
+
+        elif args.cookie_action == "load":
+            if args.env:
+                loaded = client.load_cookies_from_env()
+                if loaded:
+                    print(f"✅ 从环境变量加载了 {len(loaded)} 个 Cookie:")
+                    for src in loaded.keys():
+                        platform_name = PLATFORMS.get(src, src)
+                        print(f"   - {platform_name} ({src})")
+                else:
+                    print("⚠️  未找到任何 Cookie 环境变量")
+                    print("\n💡 环境变量命名规则:")
+                    for src, env_var in COOKIE_ENV_VARS.items():
+                        print(f"   export {env_var}=\"your_cookie_here\"")
+            else:
+                filepath = args.cookie_file or DEFAULT_COOKIE_FILE
+                loaded = client.load_cookies_from_file(filepath)
+                if loaded:
+                    print(f"✅ 从文件加载了 {len(loaded)} 个 Cookie: {filepath}")
+                    for src in loaded.keys():
+                        platform_name = PLATFORMS.get(src, src)
+                        print(f"   - {platform_name} ({src})")
+                else:
+                    print(f"⚠️  文件不存在或为空: {filepath}")
+                    print(f"\n💡 创建 JSON 文件:")
+                    print(f'   echo \'{{"netease": "MUSIC_U=xxx", "qq": "uin=xxx"}}\' > {filepath}')
+
+        elif args.cookie_action == "save":
+            filepath = args.cookie_file or DEFAULT_COOKIE_FILE
+            client.save_cookies_to_file(filepath)
+            cookies = client.get_cookies()
+            print(f"✅ 已保存 {len(cookies)} 个 Cookie 到: {filepath}")
 
     elif args.command == "send-to-chat":
         target = Path(args.path)
