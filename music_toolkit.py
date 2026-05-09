@@ -4352,6 +4352,13 @@ def main():
                    help="歌词请求间隔秒数 (默认 1.5)")
     p.add_argument("--timeout", type=int, default=15, help="请求超时秒数 (默认 15)")
 
+    # ── multi-playlist ─────────────────────────────────────────────────────
+    p = sub.add_parser("multi-playlist", help="多平台多歌单混合抓取（输出统一格式 CSV）")
+    p.add_argument("urls", nargs="+", help="多个歌单链接（空格分隔，支持酷狗/汽水/QQ音乐/网易云）")
+    p.add_argument("--output", "-o", default="multi_platform_playlist.csv",
+                   help="输出 CSV 文件路径（默认: multi_platform_playlist.csv）")
+    p.add_argument("--timeout", type=int, default=15, help="请求超时秒数 (默认 15)")
+
     # ── platforms ──────────────────────────────────────────────────────────
     sub.add_parser("platforms", help="列出支持的平台")
 
@@ -4918,6 +4925,123 @@ def _run_command(args):
                 if idx < len(playlist.tracks):
                     _time.sleep(args.delay)
             print(f"\n📊 歌词下载完成: {ok}/{len(playlist.tracks)} 首  → {save_dir}/")
+
+    elif args.command == "multi-playlist":
+        import csv
+
+        # 平台名称映射
+        PLATFORM_NAMES = {
+            'kugou': '酷狗',
+            'soda': '汽水',
+            'qq': 'QQ音乐',
+            'netease': '网易云',
+            'qishui': '汽水'
+        }
+
+        # 抓取所有歌单
+        all_tracks = []
+        playlist_info = []
+
+        print(f'🎵 开始多平台多歌单混合抓取...\n')
+
+        for i, url in enumerate(args.urls, 1):
+            try:
+                print(f'{i}. 抓取: {url[:60]}...')
+                playlist = get_playlist_detail_from_url(url, timeout=args.timeout)
+
+                platform_name = PLATFORM_NAMES.get(playlist.platform, playlist.platform)
+
+                playlist_info.append({
+                    'title': playlist.title,
+                    'platform': platform_name,
+                    'creator': playlist.creator,
+                    'count': len(playlist.tracks)
+                })
+
+                # 添加歌单来源信息到每首歌
+                for track in playlist.tracks:
+                    track_platform = PLATFORM_NAMES.get(track.platform, track.platform)
+                    all_tracks.append({
+                        'playlist_title': playlist.title,
+                        'playlist_platform': platform_name,
+                        'song_id': track.song_id,
+                        'platform': track_platform,
+                        'name': track.name,
+                        'artist': track.artist,
+                        'resolved_url': track.resolved_url,
+                        'duration': track.duration,
+                        'album': track.album,
+                        'publish_date': track.publish_date,
+                        'favorites': track.favorites,
+                        'comments': track.comments,
+                        'shares': track.shares,
+                        'plays': track.plays
+                    })
+
+                print(f'   ✅ [{platform_name}] {playlist.title[:30]}... ({len(playlist.tracks)} 首)')
+            except Exception as e:
+                print(f'   ❌ 失败: {str(e)[:50]}')
+
+        if not all_tracks:
+            print('\n❌ 没有成功抓取到任何歌曲')
+            return
+
+        print(f'\n📊 汇总统计:')
+        print(f'   总歌单数: {len(playlist_info)}')
+        print(f'   总歌曲数: {len(all_tracks)}')
+        print()
+
+        for info in playlist_info:
+            print(f'   - [{info["platform"]}] {info["title"][:30]}... ({info["count"]} 首)')
+
+        # 导出为 CSV
+        output_file = args.output
+        with open(output_file, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+
+            # 统一表头
+            writer.writerow([
+                '序号',
+                '歌单名称',
+                '歌单平台',
+                '歌曲名',
+                '歌手',
+                '歌曲链接',
+                '时长(秒)',
+                '专辑',
+                '发布日期',
+                '平台',
+                '歌曲ID',
+                '收藏数',
+                '评论数',
+                '分享数',
+                '播放数'
+            ])
+
+            # 写入数据
+            for i, track in enumerate(all_tracks, 1):
+                writer.writerow([
+                    i,
+                    track['playlist_title'],
+                    track['playlist_platform'],
+                    track['name'],
+                    track['artist'],
+                    track['resolved_url'],
+                    track['duration'],
+                    track['album'],
+                    track['publish_date'],
+                    track['platform'],
+                    track['song_id'],
+                    track['favorites'],
+                    track['comments'],
+                    track['shares'],
+                    track['plays']
+                ])
+
+        print(f'\n✅ 已导出到: {output_file}')
+        print(f'\n前 5 首歌曲预览:')
+        for i, track in enumerate(all_tracks[:5], 1):
+            print(f'{i}. [{track["playlist_platform"]}] {track["name"]} - {track["artist"]}')
 
     elif args.command == "platforms":
         print("\n🎵 支持的平台:\n")

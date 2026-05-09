@@ -432,7 +432,81 @@ python3 music_toolkit.py music-detail "https://y.qq.com/n/ryqq/songDetail/xxx"
 - 生成可直接打开的分享链接：`https://www.kugou.com/song/#hash={歌曲hash}`
 - 不再使用搜索链接，确保链接可用性
 
-### 场景 A: 查看歌单数据（终端输出）
+### 场景 A: 多平台多歌单混合抓取（重磅功能）🔥
+
+**一条命令抓取多个平台的多个歌单，输出统一格式的 CSV 表格**，支持酷狗、汽水、QQ音乐、网易云任意组合。
+
+```bash
+# 基础用法：传入多个歌单链接（空格分隔）
+python3 music_toolkit.py multi-playlist \
+  "https://t1.kugou.com/311Fhf2G1V2" \
+  "https://qishui.douyin.com/s/ixTvrn76/" \
+  "https://i2.y.qq.com/n3/other/pages/details/playlist.html?id=9475333126" \
+  "https://163cn.tv/6IUPicb"
+
+# 指定输出文件名
+python3 music_toolkit.py multi-playlist \
+  "歌单链接1" "歌单链接2" "歌单链接3" \
+  --output my_playlist.csv
+```
+
+**输出示例**：
+
+```
+🎵 开始多平台多歌单混合抓取...
+
+1. 抓取: https://t1.kugou.com/311Fhf2G1V2...
+   ✅ [酷狗] 次次_灏.Hao_高音质在线试听... (44 首)
+2. 抓取: https://qishui.douyin.com/s/ixTvrn76/...
+   ✅ [汽水] 爱喽叽歪（AI音乐探索者）喜欢的音乐... (49 首)
+3. 抓取: https://i2.y.qq.com/n3/other/pages/details/playlist.html...
+   ✅ [QQ音乐] 我喜欢... (14 首)
+4. 抓取: https://163cn.tv/6IUPicb...
+   ✅ [网易云] 盗版... (5 首)
+
+📊 汇总统计:
+   总歌单数: 4
+   总歌曲数: 112
+
+✅ 已导出到: multi_platform_playlist.csv
+```
+
+**CSV 表格结构（15 列统一格式）**：
+
+| 列名 | 说明 | 示例 |
+|------|------|------|
+| 序号 | 全局序号 | 1, 2, 3... |
+| 歌单名称 | 来源歌单标题 | 次次_灏.Hao_高音质在线试听 |
+| 歌单平台 | 歌单所属平台（中文） | 酷狗、汽水、QQ音乐、网易云 |
+| 歌曲名 | 歌曲标题 | 次次 |
+| 歌手 | 演唱者 | 灏.Hao |
+| 歌曲链接 | 可直接打开的链接 | https://www.kugou.com/song/#hash=xxx |
+| 时长(秒) | 歌曲时长 | 187 |
+| 专辑 | 所属专辑 | - |
+| 发布日期 | 发布时间 | 2024-01-01 |
+| 平台 | 歌曲平台（中文） | 酷狗、汽水、QQ音乐、网易云 |
+| 歌曲ID | 平台内部ID | A9AAA9D912C95DA0F67D6EB38924AC84 |
+| 收藏数 | 收藏/点赞数 | 1234 |
+| 评论数 | 评论数量 | 567 |
+| 分享数 | 分享次数 | 89 |
+| 播放数 | 播放次数 | 12345 |
+
+**特点**：
+- ✅ **跨平台统一**：所有平台使用相同的 15 列表头
+- ✅ **来源追溯**：每首歌都标记来自哪个歌单、哪个平台
+- ✅ **可直接打开**：歌曲链接可直接在浏览器打开播放
+- ✅ **Excel 友好**：UTF-8 BOM 编码，Excel 可直接打开
+- ✅ **数据完整**：保留各平台特有数据（汽水音乐统计最全）
+
+**使用场景**：
+- 🎯 收集多个平台的喜欢歌单，合并分析
+- 🎯 对比不同平台同一歌曲的数据表现
+- 🎯 批量导出歌单用于数据分析或备份
+- 🎯 AI Agent 自动化处理多源音乐数据
+
+### 场景 B: 查看单个歌单数据（终端输出）
+
+### 场景 B: 查看单个歌单数据（终端输出）
 
 ```bash
 # 汽水音乐（全量统计数据）
@@ -456,7 +530,7 @@ python3 music_toolkit.py music-detail "https://m.kugou.com/share/song.html?chain
 python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --json
 ```
 
-### 场景 B: 生成飞书多维表格（`playlist-to-table`）
+### 场景 C: 生成飞书多维表格（`playlist-to-table`）
 
 一条命令完成：抓取歌单 → 创建飞书在线多维表格，**汽水 / 网易云 / QQ / 酷狗通用**。
 
@@ -494,7 +568,7 @@ python3 music_toolkit.py playlist-to-table "<url>" --sort likes --chat-id oc_xxx
 
 > **酷狗链接格式**：生成 `https://www.kugou.com/song/#hash={歌曲hash}` 格式的分享链接，可直接打开播放。
 
-### 场景 C: 推送飞书卡片 + 导出（`push-playlist-detail`）
+### 场景 D: 推送飞书卡片 + 导出（`push-playlist-detail`）
 
 ```bash
 # 抓取 + 推送排行卡片（按点赞降序）
