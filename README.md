@@ -70,6 +70,7 @@ go-music-dl   feishu-toolkit (可选)
 - **Docker** — 运行 go-music-dl 后端
 - **Python 3.9+**
 - **requests** — `pip install requests`
+- **(可选) KuGouMusicApi** — 获取酷狗完整歌单（突破 SSR 限制）
 - **(可选) feishu-toolkit** — 解锁飞书推送能力
 
 ### 安装
@@ -78,27 +79,67 @@ go-music-dl   feishu-toolkit (可选)
 # 1. 启动 go-music-dl 后端
 docker run -d --name go-music-dl -p 8080:8080 guohuiyuan/go-music-dl:latest
 
-# 2. 克隆项目（建议与 feishu-toolkit 同级）
+# 2. (可选) 启动 KuGouMusicApi 服务 — 获取酷狗完整歌单
+docker-compose -f docker-compose.kugou-api.yml up -d
+
+# 3. 克隆项目（建议与 feishu-toolkit 同级）
 git clone https://github.com/mix9581/music-toolkit.git
 cd music-toolkit
 
-# 3. 安装依赖
+# 4. 安装依赖
 pip install requests
 
-# 4. (可选) 安装 feishu-toolkit — 解锁飞书推送能力
+# 5. (可选) 配置 KuGouMusicApi 地址（默认 http://localhost:3000）
+export KUGOU_API_URL="http://localhost:3000"
+
+# 6. (可选) 安装 feishu-toolkit — 解锁飞书推送能力
 git clone https://github.com/mix9581/feishu-toolkit.git ../feishu-toolkit
 
-# 5. (可选) 配置飞书应用凭证
+# 7. (可选) 配置飞书应用凭证
 export FEISHU_APP_ID="cli_xxx"
 export FEISHU_APP_SECRET="xxx"
 
-# 6. (可选) 交互式选择飞书群聊
+# 8. (可选) 交互式选择飞书群聊
 python3 music_toolkit.py setup-chat
 
-# 7. 验证
+# 9. 验证
 python3 music_toolkit.py platforms
 python3 music_toolkit.py search "晴天"
 ```
+
+### 酷狗歌单增强（KuGouMusicApi）
+
+默认情况下，酷狗歌单抓取受 SSR 限制，每次最多返回 10 首歌曲。启动 KuGouMusicApi 服务后，可以获取完整歌单：
+
+**优势**：
+- ✅ 突破 SSR 限制，获取歌单所有歌曲
+- ✅ 无需 Cookie，公开歌单直接访问
+- ✅ 稳定可靠，基于官方 API 封装
+- ✅ 自动回退，API 不可用时使用网页抓取
+
+**使用方式**：
+
+```bash
+# 方式 1: Docker Compose（推荐）
+docker-compose -f docker-compose.kugou-api.yml up -d
+
+# 方式 2: 手动启动
+git clone https://github.com/MakcRe/KuGouMusicApi.git
+cd KuGouMusicApi
+npm install
+npm run dev
+
+# 验证服务
+curl http://localhost:3000/playlist/detail?ids=collection_3_1863870844_4_0
+
+# 使用（自动检测，无需额外配置）
+python3 music_toolkit.py playlist-detail "https://www.kugou.com/songlist/gcid_xxx/"
+```
+
+**工作原理**：
+1. 优先尝试使用 KuGouMusicApi（如果 `KUGOU_API_URL` 可用）
+2. API 不可用时自动回退到网页抓取（最多 10 首）
+3. 对用户完全透明，无需修改命令
 
 ### Cookie 管理（访问会员歌曲/完整歌单）
 
@@ -340,7 +381,28 @@ python3 music_toolkit.py download-playlist 9582035807 qq \
 
 数据抓取模式**不依赖 go-music-dl Docker**，直接从平台页面或 API 抓取歌曲/歌单的元数据，无需下载音频文件。
 
-### 支持平台与数据能力
+### 单曲抓取支持
+
+| 平台 | 链接格式 | 支持 |
+|------|---------|:----:|
+| **汽水音乐** | `qishui.douyin.com` | ✅ |
+| **网易云音乐** | `music.163.com/song?id=xxx` | ✅ |
+| **QQ 音乐** | `y.qq.com/n/ryqq/songDetail/xxx` | ✅ |
+| **酷狗音乐** | `m.kugou.com/share/song.html?chain=xxx` | ✅ 新增 |
+
+**使用示例**：
+```bash
+# 酷狗单曲
+python3 music_toolkit.py music-detail "https://m.kugou.com/share/song.html?chain=303ppc3G1V2"
+
+# 网易云单曲
+python3 music_toolkit.py music-detail "https://music.163.com/song?id=xxx"
+
+# QQ音乐单曲
+python3 music_toolkit.py music-detail "https://y.qq.com/n/ryqq/songDetail/xxx"
+```
+
+### 歌单抓取支持
 
 | 平台 | 歌单来源格式 | 曲目列表 | 评论数 | 收藏数 | 分享数 | 发布日期 |
 |------|------------|:-------:|:-----:|:-----:|:-----:|:-------:|
@@ -348,9 +410,27 @@ python3 music_toolkit.py download-playlist 9582035807 qq \
 | **网易云音乐** | `music.163.com/playlist?id=xxx` | ✅ 全量 | ✅ 批量 | ❌ | ❌ | ✅ |
 | **QQ 音乐** | `y.qq.com` / `c6.y.qq.com` 短链 | ✅ 全量 | ❌ | ❌ | ❌ | ✅ |
 | **酷狗音乐** | `t1.kugou.com` 短链 / `wwwapi.kugou.com/share/zlist.html` | ✅ 全量 | ❌ | ❌ | ❌ | ❌ |
-| **酷狗音乐** | `kugou.com/songlist/gcid_xxx/` 直链 | ⚠️ 前 10 首 | ❌ | ❌ | ❌ | ✅ 部分 |
+| **酷狗音乐** | `kugou.com/songlist/gcid_xxx/` 直链 (需 KuGouMusicApi) | ✅ 全量 | ❌ | ❌ | ❌ | ✅ 部分 |
 
 > **汽水最全**：SSR 渲染，一次 GET 拿到全部数据；网易云有批量评论 API；QQ 和酷狗互动统计不对外开放。
+
+#### 酷狗音乐特色功能
+
+**完整歌单支持**：
+- ✅ **KuGouMusicApi 集成**：突破 SSR 10 首限制，获取完整歌单
+- ✅ **智能回退**：API 不可用时自动使用网页抓取
+- ✅ **多种格式**：支持 `gcid_xxx`、短链 `t1.kugou.com`、`zlist.html` 等格式
+- ✅ **单曲分享**：支持 `m.kugou.com/share/song.html` 单曲链接抓取
+
+**链接格式**：
+- 歌单短链：`https://t1.kugou.com/xxx`
+- 歌单直链：`https://www.kugou.com/songlist/gcid_xxx/`
+- zlist 格式：`http://wwwapi.kugou.com/share/zlist.html?...`
+- 单曲分享：`https://m.kugou.com/share/song.html?chain=xxx`
+
+**歌曲链接**：
+- 生成可直接打开的分享链接：`https://www.kugou.com/song/#hash={歌曲hash}`
+- 不再使用搜索链接，确保链接可用性
 
 ### 场景 A: 查看歌单数据（终端输出）
 
@@ -364,9 +444,13 @@ python3 music_toolkit.py playlist-detail "https://music.163.com/playlist?id=1766
 # QQ 音乐（含专辑 + 发布日期）
 python3 music_toolkit.py playlist-detail "https://c6.y.qq.com/base/fcgi-bin/u?__=yJqRiy5AM0uy"
 
-# 酷狗（短链 → 全量；直链 → 仅前10首）
-python3 music_toolkit.py playlist-detail "https://t1.kugou.com/2jaCZcaG1V2"
-python3 music_toolkit.py playlist-detail "https://wwwapi.kugou.com/share/zlist.html?_t=xxx&chain=xxx&..."
+# 酷狗音乐（多种格式支持）
+python3 music_toolkit.py playlist-detail "https://t1.kugou.com/2ZNMP4eG1V2"  # 短链 → 全量
+python3 music_toolkit.py playlist-detail "https://www.kugou.com/songlist/gcid_xxx/"  # 直链 → 全量（需 KuGouMusicApi）
+python3 music_toolkit.py playlist-detail "http://wwwapi.kugou.com/share/zlist.html?..."  # zlist 格式 → 全量
+
+# 酷狗单曲（新增支持）
+python3 music_toolkit.py music-detail "https://m.kugou.com/share/song.html?chain=303ppc3G1V2"
 
 # JSON 输出（含完整曲目数组，方便程序处理）
 python3 music_toolkit.py playlist-detail "https://qishui.douyin.com/s/ixrkNUQa/" --json
@@ -406,7 +490,9 @@ python3 music_toolkit.py playlist-to-table "<url>" --sort likes --chat-id oc_xxx
 | 评论 | 评论数 | ✅ | ✅ | 0 | 0 |
 | 分享 | 分享数 | ✅ | 0 | 0 | 0 |
 | 播放 | 播放次数 | ✅ | 0 | 0 | 0 |
-| 链接 | 歌曲原始链接（纯文本，可复制） | ✅ | ✅ | ✅ | 搜索链接 |
+| 链接 | 歌曲原始链接（纯文本，可复制） | ✅ | ✅ | ✅ | 分享链接 |
+
+> **酷狗链接格式**：生成 `https://www.kugou.com/song/#hash={歌曲hash}` 格式的分享链接，可直接打开播放。
 
 ### 场景 C: 推送飞书卡片 + 导出（`push-playlist-detail`）
 
