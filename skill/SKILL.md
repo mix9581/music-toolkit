@@ -22,13 +22,13 @@ description: |
 
   ### 📤 推送模块（push-* / send-to-chat）
   **当用户需要把音乐数据或文件发送到飞书时使用。**
-  - 依赖 feishu-toolkit（../feishu-toolkit/feishu_toolkit.py）
+  - 依赖 feishu-toolkit（/Users/mixx/hermes/tooling/feishu-toolkit/feishu_toolkit.py）
   - 不要使用官方 Feishu MCP 替代
 
   ⚠️ **模块边界**：数据监控（playlist-detail）和下载（download-playlist）是独立的两件事。
   用户说"看看这个歌单的数据"→ playlist-detail；用户说"下载这个歌单"→ download-playlist。
 
-  ⚠️ 飞书联动规则：所有 push-* 命令均依赖 ../feishu-toolkit/feishu_toolkit.py，
+  ⚠️ 飞书联动规则：所有 push-* 命令均依赖 /Users/mixx/hermes/tooling/feishu-toolkit/feishu_toolkit.py，
   需配置 FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_DEFAULT_CHAT_ID 环境变量。
 tools:
   - Bash
@@ -80,8 +80,8 @@ triggers:
 
 ## 工具位置
 
-工具位置: 当前项目根目录下的 `music_toolkit.py`
-运行方式: 先 `cd` 到 `music-toolkit/` 项目根目录，再执行下面命令
+工具位置: `/Users/mixx/hermes/tooling/music-toolkit/music_toolkit.py`
+运行方式: 优先使用已包装好的 `music-toolkit <command>` 命令
 依赖: `requests` (`pip install requests`)
 后端: go-music-dl Docker (`localhost:8080`)（仅下载/搜索功能需要）
 
@@ -99,7 +99,7 @@ triggers:
 music_toolkit.py 的 push-* CLI 命令
 或 Python 的 FeishuPusher 类
         ↓
-动态导入 ../feishu-toolkit/feishu_toolkit.py
+动态导入 /Users/mixx/hermes/tooling/feishu-toolkit/feishu_toolkit.py
         ↓
 feishu_toolkit.FeishuClient → 飞书 Open API
 ```
@@ -108,10 +108,10 @@ feishu_toolkit.FeishuClient → 飞书 Open API
 
 ```bash
 # 1. feishu-toolkit 必须位于同级目录（或设置环境变量）
-ls ../feishu-toolkit/feishu_toolkit.py  # 必须存在
+ls /Users/mixx/hermes/tooling/feishu-toolkit/feishu_toolkit.py  # 必须存在
 
 # 或者设置路径
-export FEISHU_TOOLKIT_PATH="/path/to/feishu-toolkit"
+export FEISHU_TOOLKIT_PATH="/Users/mixx/hermes/tooling/feishu-toolkit"
 
 # 2. 飞书 App 凭证（push-* App API 命令必需）
 export FEISHU_APP_ID="cli_xxx"
